@@ -256,7 +256,7 @@ src/main/kotlin/io/orbitrack/idea/
 - [x] PR management (merge, checkout)
 - [x] Issue creation
 - [x] Settings UI
-- [ ] GitHub Actions CI/CD
+- [x] GitHub Actions CI/CD
 - [ ] Background auto-sync with configurable interval
 - [ ] First-run balloon notification (Track All / Select / Ignore)
 
@@ -276,9 +276,3 @@ src/main/kotlin/io/orbitrack/idea/
 ## License
 
 This project is licensed under the Apache License 2.0 — see the [LICENSE](LICENSE) file for details.
-
----
-
-## Author
-
-**Anton** — [anvas.dev](https://anvas.dev)
