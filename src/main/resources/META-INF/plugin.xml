@@ -1,5 +1,5 @@
 <idea-plugin>
-    <id>io.orbitrack.idea</id>
+    <id>dev.anvas.orbitrack.idea</id>
     <name>OrbiTrack</name>
     <vendor url="https://anvas.dev">Anton</vendor>
     <description><![CDATA[
@@ -13,31 +13,31 @@
         <!-- Tool Window -->
         <toolWindow id="OrbiTrack"
                     anchor="right"
-                    factoryClass="io.orbitrack.idea.ui.OrbiTrackToolWindowFactory"
+                    factoryClass="dev.anvas.orbitrack.idea.ui.OrbiTrackToolWindowFactory"
                     icon="/icons/orbitrack.svg"/>
 
         <!-- Application-level service (token, global org config) -->
         <applicationService
-            serviceImplementation="io.orbitrack.idea.services.OrbiTrackAppService"/>
+            serviceImplementation="dev.anvas.orbitrack.idea.services.OrbiTrackAppService"/>
 
         <!-- Project-level service (tracked repos, sync state) -->
         <projectService
-            serviceImplementation="io.orbitrack.idea.services.OrbiTrackProjectService"/>
+            serviceImplementation="dev.anvas.orbitrack.idea.services.OrbiTrackProjectService"/>
 
         <!-- Settings page -->
         <applicationConfigurable
             parentId="tools"
-            instance="io.orbitrack.idea.settings.OrbiTrackConfigurable"
+            instance="dev.anvas.orbitrack.idea.settings.OrbiTrackConfigurable"
             displayName="OrbiTrack"/>
     </extensions>
 
     <actions>
         <action id="OrbiTrack.Refresh"
-                class="io.orbitrack.idea.actions.RefreshAction"
+                class="dev.anvas.orbitrack.idea.actions.RefreshAction"
                 text="Refresh"
                 icon="AllIcons.Actions.Refresh"/>
         <action id="OrbiTrack.CreateIssue"
-                class="io.orbitrack.idea.actions.CreateIssueAction"
+                class="dev.anvas.orbitrack.idea.actions.CreateIssueAction"
                 text="New Issue"
                 description="Create a new GitHub issue"
                 icon="AllIcons.General.Add"/>
