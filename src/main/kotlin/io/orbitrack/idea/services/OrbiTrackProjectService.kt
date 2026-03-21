@@ -56,6 +56,21 @@ class OrbiTrackProjectService(private val project: Project) : Disposable {
     /** Current filter state kept in sync by the UI for persistence. */
     var currentFilterState: CachedFilterState? = null
 
+    /**
+     * Derives the GitHub API `state` parameter from the current filter selection.
+     * stateIndex: 0=Open, 1=All States, 2=Closed, 3=Merged
+     * GitHub API only supports "open", "closed", "all" — merged is a subset of closed.
+     */
+    private fun resolveApiState(): String {
+        return when (currentFilterState?.stateIndex) {
+            0 -> "open"
+            1 -> "all"
+            2 -> "closed"
+            3 -> "closed"   // merged is a sub-state of closed; client-side filter handles the rest
+            else -> "open"
+        }
+    }
+
     init {
         // Restore last known state from disk cache immediately (synchronous, fast)
         loadFromCache()
@@ -259,11 +274,12 @@ class OrbiTrackProjectService(private val project: Project) : Disposable {
         enabledRepos: List<TrackedRepo>,
         refreshStart: Instant
     ) {
+        val apiState = resolveApiState()
         val freshItems = mutableListOf<OrbiItem>()
         for (repo in enabledRepos) {
             try {
-                val issues = client.listIssues(repo.org, repo.repo, state = "open", perPage = 20, page = 1)
-                val prs = client.listPRs(repo.org, repo.repo, state = "open", perPage = 20, page = 1)
+                val issues = client.listIssues(repo.org, repo.repo, state = apiState, perPage = 50, page = 1)
+                val prs = client.listPRs(repo.org, repo.repo, state = apiState, perPage = 50, page = 1)
                 freshItems.addAll(issues)
                 freshItems.addAll(prs)
             } catch (e: Exception) {
@@ -286,16 +302,26 @@ class OrbiTrackProjectService(private val project: Project) : Disposable {
             }
         }
 
-        // Remove items that were open but are no longer returned
+        // Remove stale items only for the state we actually fetched.
+        // When fetching "open", only purge cached open items that are no longer returned;
+        // when fetching "closed", only purge cached closed/merged items, etc.
+        // When fetching "all", purge any item from a tracked repo that wasn't returned.
         val trackedOrgRepos = enabledRepos.map { it.org to it.repo }.toSet()
-        existingByKey.entries.removeAll { (key, _) ->
+        val fetchedStates: Set<ItemState> = when (apiState) {
+            "open" -> setOf(ItemState.OPEN)
+            "closed" -> setOf(ItemState.CLOSED, ItemState.MERGED)
+            else -> ItemState.entries.toSet()  // "all"
+        }
+        existingByKey.entries.removeAll { (key, item) ->
             val (org, repo, _) = key
-            (org to repo) in trackedOrgRepos && key !in freshByKey
+            (org to repo) in trackedOrgRepos
+                    && item.state in fetchedStates
+                    && key !in freshByKey
         }
 
         items = existingByKey.values.sortedByDescending { it.updatedAt }
         currentPage = 1
-        hasMore = freshItems.size >= 20
+        hasMore = freshItems.size >= 50
         lastRefreshTimestamp = refreshStart
         isLoading = false
         persistToCache()
@@ -318,15 +344,7 @@ class OrbiTrackProjectService(private val project: Project) : Disposable {
                 val key = Triple(freshItem.org, freshItem.repo, freshItem.number)
                 val old = existingByKey[key]
 
-                // Item's state changed (e.g. open → closed/merged) — remove from cache
-                if (old != null && old.state != freshItem.state) {
-                    existingByKey.remove(key)
-                    commentsMap.remove(freshItem.number)
-                    timelineMap.remove(freshItem.number)
-                    continue
-                }
-
-                if (old == null || old.updatedAt != freshItem.updatedAt) {
+                if (old == null || old.updatedAt != freshItem.updatedAt || old.state != freshItem.state) {
                     existingByKey[key] = freshItem
                     commentsMap.remove(freshItem.number)
                     timelineMap.remove(freshItem.number)
@@ -353,12 +371,13 @@ class OrbiTrackProjectService(private val project: Project) : Disposable {
             notifyListeners()
             try {
                 val client = OrbiTrackAppService.getInstance().getClient() ?: return@launch
+                val apiState = resolveApiState()
                 val nextPage = currentPage + 1
                 val moreItems = mutableListOf<OrbiItem>()
                 for (repo in trackedRepos.filter { it.enabled }) {
                     try {
-                        val issues = client.listIssues(repo.org, repo.repo, state = "open", perPage = 20, page = nextPage)
-                        val prs = client.listPRs(repo.org, repo.repo, state = "open", perPage = 20, page = nextPage)
+                        val issues = client.listIssues(repo.org, repo.repo, state = apiState, perPage = 50, page = nextPage)
+                        val prs = client.listPRs(repo.org, repo.repo, state = apiState, perPage = 50, page = nextPage)
                         moreItems.addAll(issues)
                         moreItems.addAll(prs)
                     } catch (e: Exception) {
@@ -369,7 +388,7 @@ class OrbiTrackProjectService(private val project: Project) : Disposable {
                     hasMore = false
                 } else {
                     currentPage = nextPage
-                    hasMore = moreItems.size >= 20
+                    hasMore = moreItems.size >= 50
                     val existingKeys = items.map { Triple(it.org, it.repo, it.number) }.toSet()
                     val newOnly = moreItems.filter { Triple(it.org, it.repo, it.number) !in existingKeys }
                     items = (items + newOnly).sortedByDescending { it.updatedAt }

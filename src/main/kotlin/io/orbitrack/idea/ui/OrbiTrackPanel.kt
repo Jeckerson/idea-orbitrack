@@ -272,6 +272,10 @@ class OrbiTrackPanel(private val project: Project) : JPanel(BorderLayout()), Dis
 
         val entries = buildGroupedEntries(sorted, filterPanel.groupModes)
 
+        // Clear selection before the model to avoid a macOS accessibility NPE
+        // (DefaultListModel.clear → fireIntervalRemoved → selection change →
+        //  ExpandableItemsHandler → CAccessibility with stale accessible bundle)
+        itemList.clearSelection()
         listModel.clear()
         entries.forEach { listModel.addElement(it) }
 
