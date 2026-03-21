@@ -27,6 +27,8 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.3")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("org.xerial:sqlite-jdbc:3.45.3.0")
+
+    testImplementation("junit:junit:4.13.2")
 }
 
 kotlin {
