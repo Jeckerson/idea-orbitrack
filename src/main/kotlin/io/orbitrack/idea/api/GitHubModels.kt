@@ -24,6 +24,50 @@ data class GhPullRequestRef(
 )
 
 @Serializable
+data class GhBranchRef(
+    val ref: String = "",
+    val sha: String = "",
+    val label: String = "",
+    val repo: GhBranchRepo? = null,
+)
+
+@Serializable
+data class GhBranchRepo(
+    @SerialName("full_name") val fullName: String = "",
+    val fork: Boolean = false,
+)
+
+@Serializable
+data class GhPullDetail(
+    val id: Long,
+    val number: Int,
+    val title: String,
+    val body: String? = null,
+    val state: String,
+    val merged: Boolean = false,
+    val mergeable: Boolean? = null,
+    @SerialName("mergeable_state") val mergeableState: String? = null,
+    val head: GhBranchRef = GhBranchRef(),
+    val base: GhBranchRef = GhBranchRef(),
+    val user: GhUser,
+    val labels: List<GhLabel> = emptyList(),
+    val assignees: List<GhUser> = emptyList(),
+    val milestone: GhMilestone? = null,
+    val comments: Int = 0,
+    @SerialName("review_comments") val reviewComments: Int = 0,
+    @SerialName("created_at") val createdAt: String,
+    @SerialName("updated_at") val updatedAt: String,
+    @SerialName("html_url") val htmlUrl: String,
+)
+
+@Serializable
+data class GhMergeResult(
+    val sha: String? = null,
+    val merged: Boolean = false,
+    val message: String = "",
+)
+
+@Serializable
 data class GhIssue(
     val id: Long,
     val number: Int,

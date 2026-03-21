@@ -24,6 +24,13 @@ data class OrbiItem(
     val createdAt: Instant,
     val updatedAt: Instant,
     val url: String,
+    // PR-specific fields (populated lazily via getPullDetail)
+    val headBranch: String? = null,
+    val baseBranch: String? = null,
+    val headSha: String? = null,
+    val isFork: Boolean = false,
+    val mergeable: Boolean? = null,       // null = unknown/checking, true = clean, false = conflicts
+    val mergeableState: String? = null,   // "clean", "dirty", "unstable", "blocked", "unknown"
 )
 
 data class OrbiComment(

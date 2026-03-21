@@ -32,6 +32,12 @@ class ItemDetailPanel : JPanel(BorderLayout()) {
     /** Callback when user wants to delete a comment. Receives (item, commentId). */
     var onDeleteComment: ((OrbiItem, Long) -> Unit)? = null
 
+    /** Callback when user wants to merge a PR. Receives (item, mergeMethod). */
+    var onMergePR: ((OrbiItem, String) -> Unit)? = null
+
+    /** Callback when user wants to checkout the PR's branch locally. Receives (item). */
+    var onCheckoutBranch: ((OrbiItem) -> Unit)? = null
+
     private var currentItem: OrbiItem? = null
 
     private val emptyLabel = JBLabel("Select an item to view details").apply {
@@ -208,6 +214,107 @@ class ItemDetailPanel : JPanel(BorderLayout()) {
             })
         }
 
+        // --- PR-specific actions (merge + checkout) ---
+        val prActions = JPanel().apply {
+            layout = BoxLayout(this, BoxLayout.Y_AXIS)
+            isOpaque = false
+            alignmentX = LEFT_ALIGNMENT
+            border = JBUI.Borders.emptyTop(4)
+        }
+        if (item.type == ItemType.PR && item.state == ItemState.OPEN) {
+            // Merge status line
+            val mergeStatusPanel = JPanel(FlowLayout(FlowLayout.LEFT, 8, 0)).apply {
+                isOpaque = false
+                alignmentX = LEFT_ALIGNMENT
+                maximumSize = Dimension(Int.MAX_VALUE, 28)
+            }
+            val mergeStatusLabel = JBLabel().apply {
+                when (item.mergeable) {
+                    true -> {
+                        text = "\u2705 Mergeable"
+                        foreground = JBColor(0x1A7F37, 0x3FB950)
+                    }
+                    false -> {
+                        text = "\u26A0\uFE0F Has conflicts — resolve before merging"
+                        foreground = JBColor(0xCF222E, 0xF85149)
+                    }
+                    null -> {
+                        text = "\u23F3 Checking mergeability\u2026"
+                        foreground = JBColor.GRAY
+                    }
+                }
+                font = font.deriveFont(Font.PLAIN, 11f)
+            }
+            mergeStatusPanel.add(mergeStatusLabel)
+
+            if (item.headBranch != null) {
+                val branchInfo = JBLabel("${item.headBranch} \u2192 ${item.baseBranch ?: "base"}").apply {
+                    foreground = JBColor.GRAY
+                    font = font.deriveFont(Font.ITALIC, 11f)
+                }
+                mergeStatusPanel.add(branchInfo)
+            }
+
+            prActions.add(mergeStatusPanel)
+
+            // Merge + Checkout buttons
+            val prButtonPanel = JPanel(FlowLayout(FlowLayout.LEFT, 8, 0)).apply {
+                isOpaque = false
+                alignmentX = LEFT_ALIGNMENT
+                maximumSize = Dimension(Int.MAX_VALUE, 36)
+            }
+
+            // Merge button with method chooser
+            val mergeButton = JButton("Merge PR \u25BE").apply {
+                isEnabled = item.mergeable == true
+                toolTipText = when (item.mergeable) {
+                    true -> "Merge this pull request"
+                    false -> "Cannot merge: conflicts detected"
+                    null -> "Mergeability is being checked\u2026"
+                }
+                addActionListener {
+                    val popup = JPopupMenu()
+                    popup.add(JMenuItem("Create a merge commit").apply {
+                        addActionListener { onMergePR?.invoke(item, "merge") }
+                    })
+                    popup.add(JMenuItem("Squash and merge").apply {
+                        addActionListener { onMergePR?.invoke(item, "squash") }
+                    })
+                    popup.add(JMenuItem("Rebase and merge").apply {
+                        addActionListener { onMergePR?.invoke(item, "rebase") }
+                    })
+                    popup.show(this, 0, height)
+                }
+            }
+            prButtonPanel.add(mergeButton)
+
+            // Checkout branch button
+            val checkoutButton = JButton("\u2B07 Checkout Branch").apply {
+                toolTipText = if (item.headBranch != null)
+                    "Checkout '${item.headBranch}' locally"
+                else
+                    "Branch info not loaded yet"
+                isEnabled = item.headBranch != null
+                addActionListener {
+                    val confirm = JOptionPane.showConfirmDialog(
+                        this@ItemDetailPanel,
+                        "Checkout branch '${item.headBranch}' locally?\n\n" +
+                            "This will run:\n  git fetch origin\n  git checkout ${item.headBranch}\n\n" +
+                            "Make sure you have no uncommitted changes.",
+                        "Checkout Branch",
+                        JOptionPane.OK_CANCEL_OPTION,
+                        JOptionPane.QUESTION_MESSAGE,
+                    )
+                    if (confirm == JOptionPane.OK_OPTION) {
+                        onCheckoutBranch?.invoke(item)
+                    }
+                }
+            }
+            prButtonPanel.add(checkoutButton)
+
+            prActions.add(prButtonPanel)
+        }
+
         // --- Assemble scrollable content ---
         val content = JPanel().apply {
             layout = BoxLayout(this, BoxLayout.Y_AXIS)
@@ -217,6 +324,7 @@ class ItemDetailPanel : JPanel(BorderLayout()) {
             add(commentsBox)
             add(historyBox)
             add(actions)
+            add(prActions)
             add(Box.createVerticalGlue())
         }
 

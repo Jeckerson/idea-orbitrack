@@ -71,6 +71,48 @@ class OrbiTrackPanel(private val project: Project) : JPanel(BorderLayout()), Dis
                 }
             }
         }
+        onMergePR = { item, mergeMethod ->
+            service.mergePull(item, mergeMethod) { success, error ->
+                ApplicationManager.getApplication().invokeLater {
+                    if (success) {
+                        JOptionPane.showMessageDialog(
+                            this@OrbiTrackPanel,
+                            "PR #${item.number} merged successfully!",
+                            "OrbiTrack",
+                            JOptionPane.INFORMATION_MESSAGE
+                        )
+                    } else {
+                        JOptionPane.showMessageDialog(
+                            this@OrbiTrackPanel,
+                            "Failed to merge PR: ${error ?: "Unknown error"}",
+                            "OrbiTrack",
+                            JOptionPane.ERROR_MESSAGE
+                        )
+                    }
+                }
+            }
+        }
+        onCheckoutBranch = { item ->
+            service.checkoutBranch(item) { success, error ->
+                ApplicationManager.getApplication().invokeLater {
+                    if (success) {
+                        JOptionPane.showMessageDialog(
+                            this@OrbiTrackPanel,
+                            "Checked out branch '${item.headBranch}' successfully!",
+                            "OrbiTrack",
+                            JOptionPane.INFORMATION_MESSAGE
+                        )
+                    } else {
+                        JOptionPane.showMessageDialog(
+                            this@OrbiTrackPanel,
+                            "Failed to checkout branch: ${error ?: "Unknown error"}",
+                            "OrbiTrack",
+                            JOptionPane.ERROR_MESSAGE
+                        )
+                    }
+                }
+            }
+        }
     }
 
     private val loadMoreButton = JButton("Load more\u2026").apply {
@@ -129,6 +171,7 @@ class OrbiTrackPanel(private val project: Project) : JPanel(BorderLayout()), Dis
                     )
                     service.loadComments(sel.item)
                     service.loadTimeline(sel.item)
+                    service.loadPullDetail(sel.item)
                 } else {
                     detailPanel.showEmpty()
                 }
@@ -168,13 +211,17 @@ class OrbiTrackPanel(private val project: Project) : JPanel(BorderLayout()), Dis
         filterPanel.updateOrgRepoChoices(items)
         applyFilters()
 
-        // Refresh detail if selected item's comments/timeline were loaded
+        // Refresh detail if selected item's comments/timeline/PR detail were loaded
         val sel = itemList.selectedValue
         if (sel is ListEntry.Item) {
+            // Get the freshest version of this item (may have been enriched with PR detail)
+            val freshItem = svc.items.find {
+                it.org == sel.item.org && it.repo == sel.item.repo && it.number == sel.item.number
+            } ?: sel.item
             detailPanel.showItem(
-                sel.item,
-                svc.getComments(sel.item.number),
-                svc.getTimeline(sel.item.number)
+                freshItem,
+                svc.getComments(freshItem.number),
+                svc.getTimeline(freshItem.number)
             )
         }
     }

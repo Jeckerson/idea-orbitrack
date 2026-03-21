@@ -176,6 +176,40 @@ class OkHttpGitHubClient(private val token: String) : GitHubClient {
         return events.mapNotNull { it.toOrbiTimelineEvent() }
     }
 
+    // ---- Pull Request detail & merge ----
+
+    override suspend fun getPullDetail(org: String, repo: String, number: Int): GhPullDetail {
+        val body = get("$baseUrl/repos/$org/$repo/pulls/$number")
+        return json.decodeFromString<GhPullDetail>(body)
+    }
+
+    override suspend fun mergePull(
+        org: String,
+        repo: String,
+        number: Int,
+        mergeMethod: String,
+        commitTitle: String?,
+        commitMessage: String?,
+        sha: String?,
+    ): GhMergeResult {
+        val payload = buildString {
+            append("{")
+            append("\"merge_method\":${json.encodeToString(serializer<String>(), mergeMethod)}")
+            if (commitTitle != null) {
+                append(",\"commit_title\":${json.encodeToString(serializer<String>(), commitTitle)}")
+            }
+            if (commitMessage != null) {
+                append(",\"commit_message\":${json.encodeToString(serializer<String>(), commitMessage)}")
+            }
+            if (sha != null) {
+                append(",\"sha\":${json.encodeToString(serializer<String>(), sha)}")
+            }
+            append("}")
+        }
+        val response = put("$baseUrl/repos/$org/$repo/pulls/$number/merge", payload)
+        return json.decodeFromString<GhMergeResult>(response)
+    }
+
     // ---- HTTP helpers ----
 
     private suspend fun get(url: String): String = withContext(Dispatchers.IO) {
@@ -210,6 +244,19 @@ class OkHttpGitHubClient(private val token: String) : GitHubClient {
             .header("Accept", "application/vnd.github+json")
             .header("X-GitHub-Api-Version", "2022-11-28")
             .patch(jsonBody.toRequestBody(jsonMedia))
+            .build()
+        executeWithRateLimitRetry(request).use { response ->
+            response.body?.string() ?: "{}"
+        }
+    }
+
+    private suspend fun put(url: String, jsonBody: String): String = withContext(Dispatchers.IO) {
+        val request = Request.Builder()
+            .url(url)
+            .header("Authorization", "Bearer $token")
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .put(jsonBody.toRequestBody(jsonMedia))
             .build()
         executeWithRateLimitRetry(request).use { response ->
             response.body?.string() ?: "{}"

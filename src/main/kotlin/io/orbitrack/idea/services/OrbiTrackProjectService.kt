@@ -4,9 +4,12 @@ import com.intellij.openapi.Disposable
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.project.Project
+import io.orbitrack.idea.api.GhPullDetail
 import io.orbitrack.idea.model.OrbiComment
 import io.orbitrack.idea.model.OrbiItem
 import io.orbitrack.idea.model.OrbiTimelineEvent
+import io.orbitrack.idea.model.ItemType
+import io.orbitrack.idea.model.ItemState
 import io.orbitrack.idea.model.TrackedRepo
 import kotlinx.coroutines.*
 import java.time.Instant
@@ -30,6 +33,7 @@ class OrbiTrackProjectService(private val project: Project) : Disposable {
 
     private val commentsMap = mutableMapOf<Int, List<OrbiComment>>()
     private val timelineMap = mutableMapOf<Int, List<OrbiTimelineEvent>>()
+    private val pullDetailMap = mutableMapOf<Int, GhPullDetail>()
     private var authenticatedUser: String? = null
 
     /** Timestamp of the last successful refresh, used for incremental fetches via Search API. */
@@ -393,6 +397,218 @@ class OrbiTrackProjectService(private val project: Project) : Disposable {
             }
         }
     }
+
+    // ---- PR Detail (mergeability + branch refs) ----
+
+    fun getPullDetail(itemNumber: Int): GhPullDetail? = pullDetailMap[itemNumber]
+
+    fun loadPullDetail(item: OrbiItem, forceReload: Boolean = false) {
+        if (item.type != ItemType.PR) return
+        if (!forceReload && pullDetailMap.containsKey(item.number)) return
+        scope.launch {
+            try {
+                val client = OrbiTrackAppService.getInstance().getClient() ?: return@launch
+                val detail = client.getPullDetail(item.org, item.repo, item.number)
+                pullDetailMap[item.number] = detail
+
+                // Enrich the cached OrbiItem with branch/merge info
+                val key = Triple(item.org, item.repo, item.number)
+                val idx = items.indexOfFirst { Triple(it.org, it.repo, it.number) == key }
+                if (idx >= 0) {
+                    val isFork = detail.head.repo?.fork == true
+                            || detail.head.repo?.fullName != detail.base.repo?.fullName
+                    val updated = items[idx].copy(
+                        headBranch = detail.head.ref,
+                        baseBranch = detail.base.ref,
+                        headSha = detail.head.sha,
+                        isFork = isFork,
+                        mergeable = detail.mergeable,
+                        mergeableState = detail.mergeableState,
+                    )
+                    items = items.toMutableList().also { it[idx] = updated }
+                }
+
+                // If GitHub hasn't computed mergeability yet (null), retry once after a short delay
+                if (detail.mergeable == null) {
+                    kotlinx.coroutines.delay(2000)
+                    try {
+                        val retried = client.getPullDetail(item.org, item.repo, item.number)
+                        pullDetailMap[item.number] = retried
+                        val idx2 = items.indexOfFirst { Triple(it.org, it.repo, it.number) == key }
+                        if (idx2 >= 0) {
+                            val isFork2 = retried.head.repo?.fork == true
+                                    || retried.head.repo?.fullName != retried.base.repo?.fullName
+                            items = items.toMutableList().also {
+                                it[idx2] = it[idx2].copy(
+                                    mergeable = retried.mergeable,
+                                    mergeableState = retried.mergeableState,
+                                    isFork = isFork2,
+                                )
+                            }
+                        }
+                    } catch (_: Exception) { /* best-effort retry */ }
+                }
+
+                notifyListeners()
+            } catch (e: Exception) {
+                log.warn("Failed to fetch PR detail for ${item.org}/${item.repo}#${item.number}", e)
+            }
+        }
+    }
+
+    // ---- Merge PR ----
+
+    fun mergePull(
+        item: OrbiItem,
+        mergeMethod: String,
+        onResult: (Boolean, String?) -> Unit,
+    ) {
+        scope.launch {
+            try {
+                val client = OrbiTrackAppService.getInstance().getClient()
+                    ?: run { onResult(false, "No GitHub token configured."); return@launch }
+                val result = client.mergePull(
+                    org = item.org,
+                    repo = item.repo,
+                    number = item.number,
+                    mergeMethod = mergeMethod,
+                    sha = item.headSha,
+                )
+                if (result.merged) {
+                    // Update cached item state
+                    val key = Triple(item.org, item.repo, item.number)
+                    val idx = items.indexOfFirst { Triple(it.org, it.repo, it.number) == key }
+                    if (idx >= 0) {
+                        items = items.toMutableList().also {
+                            it[idx] = it[idx].copy(state = ItemState.MERGED)
+                        }
+                    }
+                    pullDetailMap.remove(item.number)
+                    onResult(true, null)
+                    notifyListeners()
+                } else {
+                    onResult(false, result.message)
+                }
+            } catch (e: Exception) {
+                log.warn("Failed to merge PR ${item.org}/${item.repo}#${item.number}", e)
+                onResult(false, e.message)
+            }
+        }
+    }
+
+    // ---- Checkout branch (via git CLI) ----
+
+    fun checkoutBranch(item: OrbiItem, onResult: (Boolean, String?) -> Unit) {
+        if (item.headBranch.isNullOrBlank()) {
+            onResult(false, "Branch name not available. Load PR details first.")
+            return
+        }
+        scope.launch {
+            try {
+                val basePath = project.basePath
+                    ?: run { onResult(false, "Cannot determine project base path."); return@launch }
+
+                // Find the correct working directory — may be a subdirectory matching the repo
+                val workDir = findRepoDir(basePath, item.org, item.repo)
+                    ?: run { onResult(false, "Cannot find local git repo for ${item.org}/${item.repo}."); return@launch }
+
+                val branch = item.headBranch!!
+                val isFork = item.isFork
+
+                if (isFork) {
+                    // For fork PRs: fetch the head ref from GitHub's special PR refs
+                    val fetchResult = runGitCommand(workDir, "git", "fetch", "origin", "pull/${item.number}/head:$branch")
+                    if (fetchResult.exitCode != 0) {
+                        onResult(false, "git fetch failed: ${fetchResult.stderr}")
+                        return@launch
+                    }
+                } else {
+                    // For same-repo PRs: fetch latest and checkout the branch
+                    val fetchResult = runGitCommand(workDir, "git", "fetch", "origin")
+                    if (fetchResult.exitCode != 0) {
+                        onResult(false, "git fetch failed: ${fetchResult.stderr}")
+                        return@launch
+                    }
+                }
+
+                val checkoutResult = runGitCommand(workDir, "git", "checkout", branch)
+                if (checkoutResult.exitCode != 0) {
+                    // Branch may not exist locally yet, try creating from remote
+                    val trackResult = runGitCommand(workDir, "git", "checkout", "-b", branch, "origin/$branch")
+                    if (trackResult.exitCode != 0 && !isFork) {
+                        onResult(false, "git checkout failed: ${trackResult.stderr}")
+                        return@launch
+                    } else if (trackResult.exitCode != 0) {
+                        // For fork, we already fetched into the branch name above
+                        val retryResult = runGitCommand(workDir, "git", "checkout", branch)
+                        if (retryResult.exitCode != 0) {
+                            onResult(false, "git checkout failed: ${retryResult.stderr}")
+                            return@launch
+                        }
+                    }
+                }
+
+                // Refresh VFS so the IDE picks up file changes
+                withContext(Dispatchers.Main) {
+                    com.intellij.openapi.vfs.VirtualFileManager.getInstance().asyncRefresh {}
+                }
+
+                onResult(true, null)
+            } catch (e: Exception) {
+                log.warn("Failed to checkout branch for ${item.org}/${item.repo}#${item.number}", e)
+                onResult(false, e.message)
+            }
+        }
+    }
+
+    private fun findRepoDir(basePath: String, org: String, repo: String): java.io.File? {
+        val baseDir = java.io.File(basePath)
+
+        // Check if the base dir itself is the repo
+        if (isGitRepoMatching(baseDir, org, repo)) return baseDir
+
+        // Check immediate subdirectories
+        val children = baseDir.listFiles { f -> f.isDirectory && !f.name.startsWith(".") }
+        if (children != null) {
+            for (child in children) {
+                if (isGitRepoMatching(child, org, repo)) return child
+            }
+        }
+
+        // Fallback: just use basePath if it has a .git dir
+        if (java.io.File(baseDir, ".git").exists()) return baseDir
+
+        return null
+    }
+
+    private fun isGitRepoMatching(dir: java.io.File, org: String, repo: String): Boolean {
+        val configFile = java.io.File(dir, ".git/config")
+        if (!configFile.exists()) return false
+        return try {
+            val remotes = GitRepoDetector.parseGitHubRemotes(configFile.readText())
+            remotes.any { it.first.equals(org, ignoreCase = true) && it.second.equals(repo, ignoreCase = true) }
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    private data class GitResult(val exitCode: Int, val stdout: String, val stderr: String)
+
+    private suspend fun runGitCommand(workDir: java.io.File, vararg command: String): GitResult =
+        withContext(Dispatchers.IO) {
+            try {
+                val process = ProcessBuilder(*command)
+                    .directory(workDir)
+                    .redirectErrorStream(false)
+                    .start()
+                val stdout = process.inputStream.bufferedReader().readText()
+                val stderr = process.errorStream.bufferedReader().readText()
+                val exitCode = process.waitFor()
+                GitResult(exitCode, stdout.trim(), stderr.trim())
+            } catch (e: Exception) {
+                GitResult(-1, "", e.message ?: "Unknown error")
+            }
+        }
 
     override fun dispose() {
         scope.cancel()

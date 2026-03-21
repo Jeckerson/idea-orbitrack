@@ -24,5 +24,19 @@ interface GitHubClient {
 
     /** Fetch timeline events for an issue/PR. */
     suspend fun getTimeline(org: String, repo: String, number: Int, perPage: Int = 100, page: Int = 1): List<OrbiTimelineEvent>
+
+    /** Fetch detailed PR info including mergeability and branch refs. */
+    suspend fun getPullDetail(org: String, repo: String, number: Int): GhPullDetail
+
+    /** Merge a pull request. Returns the merge result. */
+    suspend fun mergePull(
+        org: String,
+        repo: String,
+        number: Int,
+        mergeMethod: String = "merge",        // "merge" | "squash" | "rebase"
+        commitTitle: String? = null,
+        commitMessage: String? = null,
+        sha: String? = null,
+    ): GhMergeResult
 }
 
