@@ -54,6 +54,12 @@ intellijPlatform {
             url = providers.provider { "https://anvas.dev" }
         }
     }
+
+    pluginVerification {
+        ides {
+            recommended()
+        }
+    }
 }
 
 tasks {
