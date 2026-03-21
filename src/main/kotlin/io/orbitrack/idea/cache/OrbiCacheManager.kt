@@ -117,6 +117,18 @@ data class CachedState(
     val trackedRepos: List<TrackedRepo> = emptyList(),
     val lastRefreshEpoch: Long? = null,
     val savedAtEpoch: Long = 0L,
+    val filterState: CachedFilterState? = null,
+)
+
+@Serializable
+data class CachedFilterState(
+    val selectedOrg: String? = null,
+    val selectedRepo: String? = null,
+    val typeIndex: Int = 0,
+    val stateIndex: Int = 0,
+    val sortField: String = "UPDATED",
+    val sortDirection: String = "DESC",
+    val groupModes: List<String> = listOf("BY_TYPE"),
 )
 
 @Serializable

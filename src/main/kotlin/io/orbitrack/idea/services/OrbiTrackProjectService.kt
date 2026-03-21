@@ -5,6 +5,7 @@ import com.intellij.openapi.components.Service
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.project.Project
 import io.orbitrack.idea.api.GhPullDetail
+import io.orbitrack.idea.cache.CachedFilterState
 import io.orbitrack.idea.cache.CachedState
 import io.orbitrack.idea.cache.OrbiCacheManager
 import io.orbitrack.idea.cache.OrbiCacheManager.Companion.toCached
@@ -47,6 +48,13 @@ class OrbiTrackProjectService(private val project: Project) : Disposable {
     /** Whether cached data was restored on startup (prevents "Loading…" flash). */
     var restoredFromCache: Boolean = false
         private set
+
+    /** Filter state restored from cache (consumed once by the UI on startup). */
+    var cachedFilterState: CachedFilterState? = null
+        private set
+
+    /** Current filter state kept in sync by the UI for persistence. */
+    var currentFilterState: CachedFilterState? = null
 
     init {
         // Restore last known state from disk cache immediately (synchronous, fast)
@@ -98,6 +106,7 @@ class OrbiTrackProjectService(private val project: Project) : Disposable {
             items = cached.items.map { it.toOrbiItem() }
             trackedRepos = cached.trackedRepos
             lastRefreshTimestamp = cached.lastRefreshEpoch?.let { Instant.ofEpochMilli(it) }
+            cachedFilterState = cached.filterState
             restoredFromCache = true
 
             log.info("Restored ${items.size} items from cache (saved ${
@@ -118,6 +127,7 @@ class OrbiTrackProjectService(private val project: Project) : Disposable {
                     trackedRepos = trackedRepos,
                     lastRefreshEpoch = lastRefreshTimestamp?.toEpochMilli(),
                     savedAtEpoch = Instant.now().toEpochMilli(),
+                    filterState = currentFilterState,
                 )
                 cacheManager.save(state)
             } catch (e: Exception) {
@@ -299,14 +309,7 @@ class OrbiTrackProjectService(private val project: Project) : Disposable {
     ) {
         try {
             val repoPairs = enabledRepos.map { it.org to it.repo }
-            val updatedItems = mutableListOf<OrbiItem>()
-            var page = 1
-            // Paginate search results (up to 5 pages of 100 to stay within rate limits)
-            do {
-                val batch = client.searchUpdatedItems(repoPairs, lastRefreshTimestamp!!, perPage = 100, page = page)
-                updatedItems.addAll(batch)
-                page++
-            } while (batch.size == 100 && page <= 5)
+            val updatedItems = client.searchUpdatedItems(repoPairs, lastRefreshTimestamp!!, perPage = 100)
 
             // Merge updated items into existing cache
             val existingByKey = items.associateBy { Triple(it.org, it.repo, it.number) }.toMutableMap()
@@ -726,6 +729,7 @@ class OrbiTrackProjectService(private val project: Project) : Disposable {
                 trackedRepos = trackedRepos,
                 lastRefreshEpoch = lastRefreshTimestamp?.toEpochMilli(),
                 savedAtEpoch = Instant.now().toEpochMilli(),
+                filterState = currentFilterState,
             )
             cacheManager.save(state)
         } catch (_: Exception) { }

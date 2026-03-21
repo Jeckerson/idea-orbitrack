@@ -27,7 +27,7 @@ class OrbiTrackPanel(private val project: Project) : JPanel(BorderLayout()), Dis
         emptyText.text = "Loading\u2026"
     }
 
-    private val filterPanel = FilterPanel(onFilterChanged = ::applyFilters)
+    private val filterPanel = FilterPanel(onFilterChanged = ::onFilterChanged)
     private val detailPanel = ItemDetailPanel().apply {
         onAddComment = { item, body ->
             service.postComment(item, body) { success, error ->
@@ -198,6 +198,10 @@ class OrbiTrackPanel(private val project: Project) : JPanel(BorderLayout()), Dis
         // --- subscribe to service ---
         service.addDataListener(dataListener)
 
+        // --- restore filters from cache ---
+        service.cachedFilterState?.let { filterPanel.restoreFilterState(it) }
+        service.currentFilterState = filterPanel.getFilterState()
+
         // --- show cached data immediately if available ---
         if (service.restoredFromCache && service.items.isNotEmpty()) {
             onDataChanged()
@@ -206,6 +210,12 @@ class OrbiTrackPanel(private val project: Project) : JPanel(BorderLayout()), Dis
         // --- detect repos and start background sync ---
         service.detectRepos()
         service.refresh()
+    }
+
+    private fun onFilterChanged() {
+        applyFilters()
+        // Persist current filter state to cache
+        service.currentFilterState = filterPanel.getFilterState()
     }
 
     private fun onDataChanged() {

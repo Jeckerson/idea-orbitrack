@@ -3,6 +3,7 @@ package io.orbitrack.idea.ui
 import com.intellij.openapi.ui.ComboBox
 import com.intellij.ui.components.JBLabel
 import com.intellij.util.ui.JBUI
+import io.orbitrack.idea.cache.CachedFilterState
 import io.orbitrack.idea.model.ItemState
 import io.orbitrack.idea.model.ItemType
 import io.orbitrack.idea.model.OrbiItem
@@ -17,6 +18,10 @@ class FilterPanel(
 ) : JPanel(GridBagLayout()) {
 
     private var suppressEvents = false
+
+    /** Pending org/repo selections from cache, applied when the combo models are populated. */
+    private var pendingOrg: String? = null
+    private var pendingRepo: String? = null
 
     private val orgCombo = ComboBox(DefaultComboBoxModel(arrayOf("All Orgs")))
     private val repoCombo = ComboBox(DefaultComboBoxModel(arrayOf("All Repos")))
@@ -116,13 +121,18 @@ class FilterPanel(
             val orgs = items.map { it.org }.distinct().sorted()
             val repos = items.map { "${it.org}/${it.repo}" }.distinct().sorted()
 
-            val prevOrg = orgCombo.selectedItem
+            // Use pending cached selection (from restoreFilterState) if available,
+            // otherwise preserve the current selection.
+            val targetOrg = pendingOrg ?: orgCombo.selectedItem
             orgCombo.model = DefaultComboBoxModel((listOf("All Orgs") + orgs).toTypedArray())
-            orgCombo.selectedItem = prevOrg
+            if (targetOrg != null) orgCombo.selectedItem = targetOrg
+            // Clear pending once a real model is available (orgs populated)
+            if (pendingOrg != null && orgs.isNotEmpty()) pendingOrg = null
 
-            val prevRepo = repoCombo.selectedItem
+            val targetRepo = pendingRepo ?: repoCombo.selectedItem
             repoCombo.model = DefaultComboBoxModel((listOf("All Repos") + repos).toTypedArray())
-            repoCombo.selectedItem = prevRepo
+            if (targetRepo != null) repoCombo.selectedItem = targetRepo
+            if (pendingRepo != null && repos.isNotEmpty()) pendingRepo = null
         } finally {
             suppressEvents = false
         }
@@ -159,6 +169,57 @@ class FilterPanel(
             items.sortedWith(comparator.reversed())
         } else {
             items.sortedWith(comparator)
+        }
+    }
+
+    /** Captures the current filter/sort/group state for persistence. */
+    fun getFilterState(): CachedFilterState {
+        return CachedFilterState(
+            selectedOrg = if (orgCombo.selectedIndex > 0) orgCombo.selectedItem as? String else null,
+            selectedRepo = if (repoCombo.selectedIndex > 0) repoCombo.selectedItem as? String else null,
+            typeIndex = typeCombo.selectedIndex,
+            stateIndex = stateCombo.selectedIndex,
+            sortField = (sortFieldCombo.selectedItem as? SortField)?.name ?: "UPDATED",
+            sortDirection = sortDirection.name,
+            groupModes = groupModes.map { it.name },
+        )
+    }
+
+    /** Restores filter/sort/group state from a cached snapshot. */
+    fun restoreFilterState(state: CachedFilterState) {
+        suppressEvents = true
+        try {
+            // Type & State are fixed-size combos — safe to set by index
+            if (state.typeIndex in 0 until typeCombo.itemCount) {
+                typeCombo.selectedIndex = state.typeIndex
+            }
+            if (state.stateIndex in 0 until stateCombo.itemCount) {
+                stateCombo.selectedIndex = state.stateIndex
+            }
+
+            // Org & Repo models may not be populated yet — store as pending
+            // so updateOrgRepoChoices can apply them when the real data arrives.
+            pendingOrg = state.selectedOrg
+            pendingRepo = state.selectedRepo
+
+            // Sort
+            val restoredField = try { SortField.valueOf(state.sortField) } catch (_: Exception) { SortField.UPDATED }
+            sortFieldCombo.selectedItem = restoredField
+            val restoredDir = try { SortDirection.valueOf(state.sortDirection) } catch (_: Exception) { SortDirection.DESC }
+            sortDirection = restoredDir
+            sortDirButton.text = sortDirection.symbol
+            sortDirButton.toolTipText = sortDirection.label
+
+            // Group modes
+            val restoredModes = state.groupModes.mapNotNull {
+                try { GroupMode.valueOf(it) } catch (_: Exception) { null }
+            }.toSet()
+            for ((mode, checkItem) in groupChecks) {
+                checkItem.isSelected = mode in restoredModes
+            }
+            updateGroupButtonLabel()
+        } finally {
+            suppressEvents = false
         }
     }
 }

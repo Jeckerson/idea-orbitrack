@@ -107,6 +107,14 @@ class OkHttpGitHubClient(private val token: String) : GitHubClient {
 
     // ---- Batched search (incremental refresh) ----
 
+    /**
+     * GitHub Search API limits the number of `repo:` qualifiers per query (~5-10).
+     * We chunk repos into groups of [SEARCH_REPO_BATCH_SIZE] and merge results.
+     */
+    companion object {
+        private const val SEARCH_REPO_BATCH_SIZE = 5
+    }
+
     override suspend fun searchUpdatedItems(
         repos: List<Pair<String, String>>,
         since: Instant,
@@ -114,15 +122,46 @@ class OkHttpGitHubClient(private val token: String) : GitHubClient {
         page: Int
     ): List<OrbiItem> {
         if (repos.isEmpty()) return emptyList()
+
+        val allItems = mutableListOf<OrbiItem>()
         val sinceStr = DateTimeFormatter.ISO_INSTANT.format(since)
-        // Build query: repo:org1/repo1+repo:org2/repo2+updated:>2024-01-01T00:00:00Z
-        val repoQ = repos.joinToString("+") { (o, r) -> "repo:$o/$r" }
+
+        // Split repos into batches to avoid 422 from too many repo: qualifiers
+        for (batch in repos.chunked(SEARCH_REPO_BATCH_SIZE)) {
+            try {
+                allItems.addAll(searchBatch(batch, sinceStr, perPage, page))
+            } catch (e: GitHubApiException) {
+                if (e.statusCode == 422 && batch.size > 1) {
+                    // A repo in this batch is inaccessible — fall back to one-by-one
+                    log.info("Batch search returned 422, retrying repos individually: ${batch.joinToString { "${it.first}/${it.second}" }}")
+                    for (single in batch) {
+                        try {
+                            allItems.addAll(searchBatch(listOf(single), sinceStr, perPage, page))
+                        } catch (inner: GitHubApiException) {
+                            log.warn("Search failed for ${single.first}/${single.second} (${inner.statusCode}), skipping")
+                        }
+                    }
+                } else {
+                    log.warn("Search batch failed for ${batch.joinToString { "${it.first}/${it.second}" }}: ${e.message}")
+                }
+            }
+        }
+
+        return allItems
+    }
+
+    private suspend fun searchBatch(
+        batch: List<Pair<String, String>>,
+        sinceStr: String,
+        perPage: Int,
+        page: Int,
+    ): List<OrbiItem> {
+        val repoQ = batch.joinToString("+") { (o, r) -> "repo:$o/$r" }
         val query = URLEncoder.encode("$repoQ updated:>$sinceStr", Charsets.UTF_8)
         val url = "$baseUrl/search/issues?q=$query&per_page=$perPage&page=$page&sort=updated&order=desc"
         val body = get(url)
         val result = json.decodeFromString<GhSearchResult>(body)
         return result.items.map { issue ->
-            // Extract org/repo from html_url: https://github.com/{org}/{repo}/issues/{num}
             val parts = issue.htmlUrl.removePrefix("https://github.com/").split("/")
             val org = parts.getOrElse(0) { "" }
             val repo = parts.getOrElse(1) { "" }
