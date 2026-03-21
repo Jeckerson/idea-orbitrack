@@ -1,5 +1,12 @@
 name: Build
-on: [push]
+
+on:
+  push:
+    paths-ignore:
+      - '**.md'
+  release:
+    types: [published]
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -10,12 +17,42 @@ jobs:
         with:
           distribution: temurin
           java-version: 21
+
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
+
       - name: Build plugin
         run: ./gradlew buildPlugin
+
       - name: Run tests
         run: ./gradlew test
+
       - name: Verify plugin
         run: ./gradlew verifyPlugin
 
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: intellij-orbitrack-distributions
+          path: build/distributions
+
+  release:
+    if: github.event_name == 'release'
+    needs: [ build ]
+
+    name: Release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download Distribution Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: intellij-orbitrack-distributions
+          path: build/distributions
+
+      - name: Upload Release Asset
+        uses: softprops/action-gh-release@v2
+        with:
+          files: build/distributions/*.zip
