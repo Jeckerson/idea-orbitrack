@@ -116,13 +116,16 @@ class OrbiTrackPanel(private val project: Project) : JPanel(BorderLayout()), Dis
         onRefreshItem = { item ->
             service.refreshItem(item) { success, error ->
                 ApplicationManager.getApplication().invokeLater {
-                    if (!success && error != null) {
-                        JOptionPane.showMessageDialog(
-                            this@OrbiTrackPanel,
-                            "Failed to refresh: $error",
-                            "OrbiTrack",
-                            JOptionPane.ERROR_MESSAGE
-                        )
+                    if (!success) {
+                        this.hideLoading()
+                        if (error != null) {
+                            JOptionPane.showMessageDialog(
+                                this@OrbiTrackPanel,
+                                "Failed to refresh: $error",
+                                "OrbiTrack",
+                                JOptionPane.ERROR_MESSAGE
+                            )
+                        }
                     }
                 }
             }
@@ -250,11 +253,15 @@ class OrbiTrackPanel(private val project: Project) : JPanel(BorderLayout()), Dis
         listModel.clear()
         entries.forEach { listModel.addElement(it) }
 
-        // Restore selection
+        // Restore selection by identity (org/repo/number), not full equality
         if (selectedItem != null) {
             for (i in 0 until listModel.size()) {
                 val entry = listModel.get(i)
-                if (entry is ListEntry.Item && entry.item == selectedItem) {
+                if (entry is ListEntry.Item
+                    && entry.item.org == selectedItem.org
+                    && entry.item.repo == selectedItem.repo
+                    && entry.item.number == selectedItem.number
+                ) {
                     itemList.selectedIndex = i
                     break
                 }

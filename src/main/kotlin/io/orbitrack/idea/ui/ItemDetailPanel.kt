@@ -10,11 +10,7 @@ import io.orbitrack.idea.model.ItemType
 import io.orbitrack.idea.model.OrbiComment
 import io.orbitrack.idea.model.OrbiItem
 import io.orbitrack.idea.model.OrbiTimelineEvent
-import java.awt.BorderLayout
-import java.awt.Cursor
-import java.awt.Dimension
-import java.awt.FlowLayout
-import java.awt.Font
+import java.awt.*
 import java.awt.datatransfer.StringSelection
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -42,6 +38,35 @@ class ItemDetailPanel : JPanel(BorderLayout()) {
     var onRefreshItem: ((OrbiItem) -> Unit)? = null
 
     private var currentItem: OrbiItem? = null
+    private var isItemLoading: Boolean = false
+
+    /** The actual content lives here (at DEFAULT_LAYER inside the layered pane). */
+    private val contentPanel = JPanel(BorderLayout()).apply { isOpaque = false }
+
+    /** Semi-transparent overlay shown during per-item refresh (at PALETTE_LAYER). */
+    private val loadingOverlay = object : JPanel() {
+        init {
+            isOpaque = false
+            isVisible = false
+            layout = GridBagLayout()
+            val spinner = JBLabel("\u23F3 Refreshing\u2026").apply {
+                font = font.deriveFont(Font.BOLD, 13f)
+                foreground = JBColor.foreground()
+            }
+            add(spinner)
+        }
+
+        override fun paintComponent(g: Graphics) {
+            super.paintComponent(g)
+            val g2 = g as Graphics2D
+            g2.composite = AlphaComposite.getInstance(AlphaComposite.SRC_OVER, 0.45f)
+            g2.color = JBColor.background()
+            g2.fillRect(0, 0, width, height)
+        }
+    }
+
+    /** Layered pane that stacks contentPanel and loadingOverlay. */
+    private val layeredPane = JLayeredPane()
 
     private val emptyLabel = JBLabel("Select an item to view details").apply {
         horizontalAlignment = SwingConstants.CENTER
@@ -55,19 +80,66 @@ class ItemDetailPanel : JPanel(BorderLayout()) {
 
     init {
         border = JBUI.Borders.empty(10)
+
+        // Stack content + overlay inside a JLayeredPane
+        add(layeredPane, BorderLayout.CENTER)
+        layeredPane.add(contentPanel, JLayeredPane.DEFAULT_LAYER as Integer)
+        layeredPane.add(loadingOverlay, JLayeredPane.PALETTE_LAYER as Integer)
+
+        // Keep both children sized to fill the layered pane
+        layeredPane.addComponentListener(object : java.awt.event.ComponentAdapter() {
+            override fun componentResized(e: java.awt.event.ComponentEvent) {
+                val sz = layeredPane.size
+                contentPanel.setBounds(0, 0, sz.width, sz.height)
+                loadingOverlay.setBounds(0, 0, sz.width, sz.height)
+            }
+        })
+
         showEmpty()
     }
 
     fun showEmpty() {
-        removeAll()
+        contentPanel.removeAll()
         currentItem = null
-        add(emptyLabel, BorderLayout.CENTER)
+        isItemLoading = false
+        loadingOverlay.isVisible = false
+        contentPanel.add(emptyLabel, BorderLayout.CENTER)
+        revalidate()
+        repaint()
+    }
+
+    /**
+     * Shows a semi-transparent loading overlay on top of the current detail content.
+     * The existing content stays visible underneath.
+     */
+    fun showLoading() {
+        isItemLoading = true
+        loadingOverlay.isVisible = true
+        revalidate()
+        repaint()
+    }
+
+    /** Hides the loading overlay (called automatically by showItem). */
+    fun hideLoading() {
+        isItemLoading = false
+        loadingOverlay.isVisible = false
         revalidate()
         repaint()
     }
 
     fun showItem(item: OrbiItem, comments: List<OrbiComment>, timeline: List<OrbiTimelineEvent> = emptyList()) {
-        removeAll()
+        // Preserve scroll position when refreshing the same item
+        val isSameItem = currentItem?.let {
+            it.org == item.org && it.repo == item.repo && it.number == item.number
+        } == true
+        val prevScroll = if (isSameItem) {
+            (contentPanel.components.filterIsInstance<JBScrollPane>().firstOrNull())
+                ?.verticalScrollBar?.value
+        } else null
+
+        contentPanel.removeAll()
+        isItemLoading = false
+        loadingOverlay.isVisible = false
         currentItem = item
 
         val typeStr = if (item.type == ItemType.PR) "PR" else "Issue"
@@ -196,8 +268,7 @@ class ItemDetailPanel : JPanel(BorderLayout()) {
             add(JButton("\uD83D\uDD04 Refresh").apply {
                 toolTipText = "Refresh this ${if (item.type == ItemType.PR) "PR" else "issue"} from GitHub"
                 addActionListener {
-                    isEnabled = false
-                    text = "\u23F3 Refreshing\u2026"
+                    showLoading()
                     onRefreshItem?.invoke(item)
                 }
             })
@@ -349,9 +420,17 @@ class ItemDetailPanel : JPanel(BorderLayout()) {
             border = JBUI.Borders.empty()
             horizontalScrollBarPolicy = ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER
         }
-        add(scroll, BorderLayout.CENTER)
+        contentPanel.add(scroll, BorderLayout.CENTER)
+
         revalidate()
         repaint()
+
+        // Restore scroll position after layout
+        if (prevScroll != null && prevScroll > 0) {
+            SwingUtilities.invokeLater {
+                scroll.verticalScrollBar.value = prevScroll
+            }
+        }
     }
 
     // ---- helpers ----
