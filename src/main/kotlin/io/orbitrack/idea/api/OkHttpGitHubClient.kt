@@ -135,6 +135,20 @@ class OkHttpGitHubClient(private val token: String) : GitHubClient {
         }
     }
 
+    // ---- Single Issue / PR ----
+
+    override suspend fun getIssue(org: String, repo: String, number: Int): OrbiItem {
+        val body = get("$baseUrl/repos/$org/$repo/issues/$number")
+        val issue = json.decodeFromString<GhIssue>(body)
+        return issue.toOrbiItem(org, repo)
+    }
+
+    override suspend fun getPull(org: String, repo: String, number: Int): OrbiItem {
+        val body = get("$baseUrl/repos/$org/$repo/pulls/$number")
+        val pull = json.decodeFromString<GhPull>(body)
+        return pull.toOrbiItem(org, repo)
+    }
+
     // ---- Create Issue ----
 
     override suspend fun createIssue(

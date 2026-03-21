@@ -38,6 +38,9 @@ class ItemDetailPanel : JPanel(BorderLayout()) {
     /** Callback when user wants to checkout the PR's branch locally. Receives (item). */
     var onCheckoutBranch: ((OrbiItem) -> Unit)? = null
 
+    /** Callback when user wants to refresh this single item. Receives (item). */
+    var onRefreshItem: ((OrbiItem) -> Unit)? = null
+
     private var currentItem: OrbiItem? = null
 
     private val emptyLabel = JBLabel("Select an item to view details").apply {
@@ -189,6 +192,14 @@ class ItemDetailPanel : JPanel(BorderLayout()) {
             maximumSize = Dimension(Int.MAX_VALUE, 36)
             add(JButton("Open in Browser").apply {
                 addActionListener { BrowserUtil.browse(item.url) }
+            })
+            add(JButton("\uD83D\uDD04 Refresh").apply {
+                toolTipText = "Refresh this ${if (item.type == ItemType.PR) "PR" else "issue"} from GitHub"
+                addActionListener {
+                    isEnabled = false
+                    text = "\u23F3 Refreshing\u2026"
+                    onRefreshItem?.invoke(item)
+                }
             })
             add(JButton("+ Add Comment").apply {
                 addActionListener {

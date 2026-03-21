@@ -84,6 +84,56 @@ class OrbiTrackProjectService(private val project: Project) : Disposable {
     // ---- Data fetching ----
 
     /**
+     * Re-fetches a single issue or PR from GitHub, updating the cached item,
+     * its comments, timeline, and (for PRs) merge/branch details.
+     */
+    fun refreshItem(item: OrbiItem, onResult: ((Boolean, String?) -> Unit)? = null) {
+        scope.launch {
+            try {
+                val client = OrbiTrackAppService.getInstance().getClient()
+                    ?: run { onResult?.invoke(false, "No GitHub token configured."); return@launch }
+
+                // Fetch fresh item data
+                val freshItem = if (item.type == ItemType.PR) {
+                    client.getPull(item.org, item.repo, item.number)
+                } else {
+                    client.getIssue(item.org, item.repo, item.number)
+                }
+
+                // Update in the items cache
+                val key = Triple(item.org, item.repo, item.number)
+                val existingByKey = items.associateBy { Triple(it.org, it.repo, it.number) }.toMutableMap()
+                existingByKey[key] = freshItem
+                items = existingByKey.values.sortedByDescending { it.updatedAt }
+
+                // Invalidate and reload comments
+                commentsMap.remove(item.number)
+                val comments = client.getComments(item.org, item.repo, item.number, perPage = 30, page = 1)
+                    .map { c -> c.copy(itemId = item.id, canEdit = (authenticatedUser != null && c.author == authenticatedUser)) }
+                commentsMap[item.number] = comments
+
+                // Invalidate and reload timeline
+                timelineMap.remove(item.number)
+                val events = client.getTimeline(item.org, item.repo, item.number)
+                timelineMap[item.number] = events
+
+                // For PRs, reload merge/branch detail
+                if (freshItem.type == ItemType.PR) {
+                    pullDetailMap.remove(item.number)
+                    // loadPullDetail will enrich the item and notify again
+                    loadPullDetail(freshItem, forceReload = true)
+                }
+
+                onResult?.invoke(true, null)
+                notifyListeners()
+            } catch (e: Exception) {
+                log.warn("Failed to refresh item ${item.org}/${item.repo}#${item.number}", e)
+                onResult?.invoke(false, e.message)
+            }
+        }
+    }
+
+    /**
      * @param forceFullRefresh when true, bypass the incremental cache and re-fetch
      *        everything from scratch (used by the manual Refresh button).
      */

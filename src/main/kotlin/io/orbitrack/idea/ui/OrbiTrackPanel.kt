@@ -113,6 +113,20 @@ class OrbiTrackPanel(private val project: Project) : JPanel(BorderLayout()), Dis
                 }
             }
         }
+        onRefreshItem = { item ->
+            service.refreshItem(item) { success, error ->
+                ApplicationManager.getApplication().invokeLater {
+                    if (!success && error != null) {
+                        JOptionPane.showMessageDialog(
+                            this@OrbiTrackPanel,
+                            "Failed to refresh: $error",
+                            "OrbiTrack",
+                            JOptionPane.ERROR_MESSAGE
+                        )
+                    }
+                }
+            }
+        }
     }
 
     private val loadMoreButton = JButton("Load more\u2026").apply {

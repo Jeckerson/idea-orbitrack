@@ -19,6 +19,12 @@ interface GitHubClient {
     /** Batch search for issues/PRs updated since [since] across multiple repos. */
     suspend fun searchUpdatedItems(repos: List<Pair<String, String>>, since: Instant, perPage: Int = 100, page: Int = 1): List<OrbiItem>
 
+    /** Fetch a single issue by number. */
+    suspend fun getIssue(org: String, repo: String, number: Int): OrbiItem
+
+    /** Fetch a single pull request by number. */
+    suspend fun getPull(org: String, repo: String, number: Int): OrbiItem
+
     /** Create a new issue in the given repo. */
     suspend fun createIssue(org: String, repo: String, title: String, body: String, labels: List<String> = emptyList(), assignees: List<String> = emptyList()): OrbiItem
 
