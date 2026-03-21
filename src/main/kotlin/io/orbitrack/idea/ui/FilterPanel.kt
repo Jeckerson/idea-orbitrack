@@ -6,11 +6,11 @@ import com.intellij.util.ui.JBUI
 import io.orbitrack.idea.model.ItemState
 import io.orbitrack.idea.model.ItemType
 import io.orbitrack.idea.model.OrbiItem
+import java.awt.FlowLayout
 import java.awt.GridBagConstraints
 import java.awt.GridBagLayout
 import java.awt.Insets
-import javax.swing.DefaultComboBoxModel
-import javax.swing.JPanel
+import javax.swing.*
 
 class FilterPanel(
     private val onFilterChanged: () -> Unit
@@ -22,9 +22,44 @@ class FilterPanel(
     private val repoCombo = ComboBox(DefaultComboBoxModel(arrayOf("All Repos")))
     private val typeCombo = ComboBox(DefaultComboBoxModel(arrayOf("All Types", "Issues", "PRs")))
     private val stateCombo = ComboBox(DefaultComboBoxModel(arrayOf("Open", "All States", "Closed", "Merged")))
-    private val groupCombo = ComboBox(DefaultComboBoxModel(GroupMode.entries.toTypedArray()))
 
-    val groupMode: GroupMode get() = groupCombo.selectedItem as? GroupMode ?: GroupMode.PLAIN
+    // --- Sort controls ---
+    private val sortFieldCombo = ComboBox(DefaultComboBoxModel(SortField.entries.toTypedArray()))
+    private var sortDirection = SortDirection.DESC
+    private val sortDirButton = JButton(sortDirection.symbol).apply {
+        toolTipText = sortDirection.label
+        addActionListener {
+            sortDirection = if (sortDirection == SortDirection.DESC) SortDirection.ASC else SortDirection.DESC
+            text = sortDirection.symbol
+            toolTipText = sortDirection.label
+            if (!suppressEvents) onFilterChanged()
+        }
+    }
+    private val sortPanel = JPanel(FlowLayout(FlowLayout.LEFT, 4, 0)).apply {
+        isOpaque = false
+        add(sortFieldCombo)
+        add(sortDirButton)
+    }
+
+    // --- Multi-select grouping via checkbox popup ---
+    private val groupChecks = linkedMapOf(
+        GroupMode.BY_ORG to JCheckBoxMenuItem(GroupMode.BY_ORG.label),
+        GroupMode.BY_REPO to JCheckBoxMenuItem(GroupMode.BY_REPO.label),
+        GroupMode.BY_TYPE to JCheckBoxMenuItem(GroupMode.BY_TYPE.label, true),
+    )
+    private val groupButton = JButton("Group by \u25BE").apply {
+        addActionListener {
+            val popup = JPopupMenu()
+            for ((_, checkItem) in groupChecks) {
+                popup.add(checkItem)
+            }
+            popup.show(this, 0, height)
+        }
+    }
+
+    /** Returns selected group modes in canonical order (BY_ORG → BY_REPO → BY_TYPE). */
+    val groupModes: List<GroupMode>
+        get() = GroupMode.entries.filter { groupChecks[it]?.isSelected == true }
 
     init {
         border = JBUI.Borders.empty(6, 8, 2, 8)
@@ -34,12 +69,12 @@ class FilterPanel(
         val comboInsets = Insets(0, 0, 4, 0)
 
         var row = 0
-        fun addRow(label: String, combo: ComboBox<*>) {
+        fun addRow(label: String, component: JComponent) {
             add(JBLabel("$label:"), GridBagConstraints().apply {
                 gridx = 0; gridy = row; anchor = GridBagConstraints.WEST; insets = labelInsets
             })
             row++
-            add(combo, GridBagConstraints().apply {
+            add(component, GridBagConstraints().apply {
                 gridx = 0; gridy = row; fill = GridBagConstraints.HORIZONTAL
                 weightx = 1.0; insets = comboInsets
             })
@@ -50,13 +85,29 @@ class FilterPanel(
         addRow("Repo", repoCombo)
         addRow("Type", typeCombo)
         addRow("State", stateCombo)
-        addRow("View", groupCombo)
+        addRow("Sort", sortPanel)
+        addRow("View", groupButton)
 
         orgCombo.addActionListener { if (!suppressEvents) onFilterChanged() }
         repoCombo.addActionListener { if (!suppressEvents) onFilterChanged() }
         typeCombo.addActionListener { if (!suppressEvents) onFilterChanged() }
         stateCombo.addActionListener { if (!suppressEvents) onFilterChanged() }
-        groupCombo.addActionListener { if (!suppressEvents) onFilterChanged() }
+        sortFieldCombo.addActionListener { if (!suppressEvents) onFilterChanged() }
+        for ((_, checkItem) in groupChecks) {
+            checkItem.addActionListener {
+                updateGroupButtonLabel()
+                if (!suppressEvents) onFilterChanged()
+            }
+        }
+
+        // Reflect default grouping selection in button label
+        updateGroupButtonLabel()
+    }
+
+    private fun updateGroupButtonLabel() {
+        val modes = groupModes
+        groupButton.text = if (modes.isEmpty()) "Group by \u25BE"
+        else modes.joinToString(" \u203A ") { it.label } + " \u25BE"
     }
 
     fun updateOrgRepoChoices(items: List<OrbiItem>) {
@@ -94,6 +145,20 @@ class FilterPanel(
                 else -> true
             }
             orgOk && repoOk && typeOk && stateOk
+        }
+    }
+
+    fun applySort(items: List<OrbiItem>): List<OrbiItem> {
+        val field = sortFieldCombo.selectedItem as? SortField ?: SortField.UPDATED
+        val comparator: Comparator<OrbiItem> = when (field) {
+            SortField.UPDATED -> compareBy { it.updatedAt }
+            SortField.CREATED -> compareBy { it.createdAt }
+            SortField.ID -> compareBy { it.number }
+        }
+        return if (sortDirection == SortDirection.DESC) {
+            items.sortedWith(comparator.reversed())
+        } else {
+            items.sortedWith(comparator)
         }
     }
 }

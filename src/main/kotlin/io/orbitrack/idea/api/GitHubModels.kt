@@ -69,3 +69,27 @@ data class GhComment(
     @SerialName("updated_at") val updatedAt: String,
 )
 
+@Serializable
+data class GhSearchResult(
+    @SerialName("total_count") val totalCount: Int,
+    @SerialName("incomplete_results") val incompleteResults: Boolean = false,
+    val items: List<GhIssue> = emptyList(),
+)
+
+@Serializable
+data class GhRename(
+    val from: String = "",
+    val to: String = "",
+)
+
+@Serializable
+data class GhTimelineEvent(
+    val event: String = "",                            // "labeled", "closed", "assigned", "renamed", etc.
+    val actor: GhUser? = null,
+    val label: GhLabel? = null,
+    val assignee: GhUser? = null,
+    val milestone: GhMilestone? = null,
+    val rename: GhRename? = null,
+    @SerialName("created_at") val createdAt: String? = null,
+)
+

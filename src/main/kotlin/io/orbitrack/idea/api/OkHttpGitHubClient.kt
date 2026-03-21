@@ -5,11 +5,15 @@ import io.orbitrack.idea.model.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.serializer
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import java.net.URLEncoder
 import java.time.Instant
+import java.time.ZoneOffset
+import java.time.format.DateTimeFormatter
 import java.util.concurrent.TimeUnit
 
 class OkHttpGitHubClient(private val token: String) : GitHubClient {
@@ -89,7 +93,7 @@ class OkHttpGitHubClient(private val token: String) : GitHubClient {
 
     // ---- Authenticated user login (for canEdit checks) ----
 
-    suspend fun getAuthenticatedUser(): String? {
+    override suspend fun getAuthenticatedUser(): String? {
         return try {
             val body = get("$baseUrl/user")
             @kotlinx.serialization.Serializable
@@ -99,6 +103,77 @@ class OkHttpGitHubClient(private val token: String) : GitHubClient {
             log.warn("Failed to get authenticated user", e)
             null
         }
+    }
+
+    // ---- Batched search (incremental refresh) ----
+
+    override suspend fun searchUpdatedItems(
+        repos: List<Pair<String, String>>,
+        since: Instant,
+        perPage: Int,
+        page: Int
+    ): List<OrbiItem> {
+        if (repos.isEmpty()) return emptyList()
+        val sinceStr = DateTimeFormatter.ISO_INSTANT.format(since)
+        // Build query: repo:org1/repo1+repo:org2/repo2+updated:>2024-01-01T00:00:00Z
+        val repoQ = repos.joinToString("+") { (o, r) -> "repo:$o/$r" }
+        val query = URLEncoder.encode("$repoQ updated:>$sinceStr", Charsets.UTF_8)
+        val url = "$baseUrl/search/issues?q=$query&per_page=$perPage&page=$page&sort=updated&order=desc"
+        val body = get(url)
+        val result = json.decodeFromString<GhSearchResult>(body)
+        return result.items.map { issue ->
+            // Extract org/repo from html_url: https://github.com/{org}/{repo}/issues/{num}
+            val parts = issue.htmlUrl.removePrefix("https://github.com/").split("/")
+            val org = parts.getOrElse(0) { "" }
+            val repo = parts.getOrElse(1) { "" }
+            val isPr = issue.pullRequest != null
+            if (isPr) {
+                issue.toOrbiPrItem(org, repo)
+            } else {
+                issue.toOrbiItem(org, repo)
+            }
+        }
+    }
+
+    // ---- Create Issue ----
+
+    override suspend fun createIssue(
+        org: String,
+        repo: String,
+        title: String,
+        body: String,
+        labels: List<String>,
+        assignees: List<String>
+    ): OrbiItem {
+        val payload = buildString {
+            append("{")
+            append("\"title\":${json.encodeToString(serializer<String>(), title)}")
+            append(",\"body\":${json.encodeToString(serializer<String>(), body)}")
+            if (labels.isNotEmpty()) {
+                append(",\"labels\":${json.encodeToString(serializer<List<String>>(), labels)}")
+            }
+            if (assignees.isNotEmpty()) {
+                append(",\"assignees\":${json.encodeToString(serializer<List<String>>(), assignees)}")
+            }
+            append("}")
+        }
+        val response = post("$baseUrl/repos/$org/$repo/issues", payload)
+        val issue = json.decodeFromString<GhIssue>(response)
+        return issue.toOrbiItem(org, repo)
+    }
+
+    // ---- Timeline ----
+
+    override suspend fun getTimeline(
+        org: String,
+        repo: String,
+        number: Int,
+        perPage: Int,
+        page: Int
+    ): List<OrbiTimelineEvent> {
+        val body = get("$baseUrl/repos/$org/$repo/issues/$number/timeline?per_page=$perPage&page=$page")
+        val events = json.decodeFromString<List<GhTimelineEvent>>(body)
+        return events.mapNotNull { it.toOrbiTimelineEvent() }
     }
 
     // ---- HTTP helpers ----
@@ -245,6 +320,66 @@ class OkHttpGitHubClient(private val token: String) : GitHubClient {
         updatedAt = Instant.parse(updatedAt),
         canEdit = false, // Will be set by the service after comparing with authenticated user
     )
+
+    /**
+     * Map a search-result issue that has a pull_request field to an OrbiItem with type=PR.
+     * The search endpoint doesn't return `merged` or `review_comments`, so we approximate.
+     */
+    private fun GhIssue.toOrbiPrItem(org: String, repo: String) = OrbiItem(
+        id = id,
+        org = org,
+        repo = repo,
+        number = number,
+        type = ItemType.PR,
+        state = when (state) {
+            "closed" -> ItemState.CLOSED   // can't distinguish merged vs closed from search
+            else -> ItemState.OPEN
+        },
+        title = title,
+        body = body.orEmpty(),
+        labels = labels.map { it.name },
+        assignees = assignees.map { it.login },
+        author = user.login,
+        milestone = milestone?.title,
+        commentCount = comments,
+        createdAt = Instant.parse(createdAt),
+        updatedAt = Instant.parse(updatedAt),
+        url = htmlUrl,
+    )
+
+    private fun GhTimelineEvent.toOrbiTimelineEvent(): OrbiTimelineEvent? {
+        val ts = createdAt?.let {
+            try { Instant.parse(it) } catch (_: Exception) { null }
+        } ?: return null
+
+        val actorName = actor?.login
+        val detail = when (event) {
+            "labeled" -> "added label ${label?.name ?: "?"}"
+            "unlabeled" -> "removed label ${label?.name ?: "?"}"
+            "assigned" -> "assigned ${assignee?.login?.let { "@$it" } ?: "someone"}"
+            "unassigned" -> "unassigned ${assignee?.login?.let { "@$it" } ?: "someone"}"
+            "milestoned" -> "set milestone ${milestone?.title ?: "?"}"
+            "demilestoned" -> "removed milestone ${milestone?.title ?: "?"}"
+            "renamed" -> "renamed from \"${rename?.from}\" to \"${rename?.to}\""
+            "closed" -> "closed"
+            "reopened" -> "reopened"
+            "merged" -> "merged"
+            "locked" -> "locked"
+            "unlocked" -> "unlocked"
+            "head_ref_force_pushed" -> "force-pushed"
+            "review_requested" -> "requested review"
+            "review_dismissed" -> "dismissed review"
+            "convert_to_draft" -> "converted to draft"
+            "ready_for_review" -> "marked ready for review"
+            else -> return null  // skip unknown events
+        }
+        return OrbiTimelineEvent(
+            type = event,
+            actor = actorName,
+            detail = detail,
+            timestamp = ts,
+        )
+    }
 }
 
 class GitHubApiException(val statusCode: Int, message: String) : RuntimeException(message)

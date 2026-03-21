@@ -11,7 +11,7 @@ class RefreshAction : AnAction() {
 
     override fun actionPerformed(e: AnActionEvent) {
         val project = e.project ?: return
-        OrbiTrackProjectService.getInstance(project).refresh()
+        OrbiTrackProjectService.getInstance(project).refresh(forceFullRefresh = true)
     }
 
     override fun update(e: AnActionEvent) {

@@ -6,8 +6,10 @@ import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.project.Project
 import io.orbitrack.idea.model.OrbiComment
 import io.orbitrack.idea.model.OrbiItem
+import io.orbitrack.idea.model.OrbiTimelineEvent
 import io.orbitrack.idea.model.TrackedRepo
 import kotlinx.coroutines.*
+import java.time.Instant
 
 @Service(Service.Level.PROJECT)
 class OrbiTrackProjectService(private val project: Project) : Disposable {
@@ -27,7 +29,11 @@ class OrbiTrackProjectService(private val project: Project) : Disposable {
         private set
 
     private val commentsMap = mutableMapOf<Int, List<OrbiComment>>()
+    private val timelineMap = mutableMapOf<Int, List<OrbiTimelineEvent>>()
     private var authenticatedUser: String? = null
+
+    /** Timestamp of the last successful refresh, used for incremental fetches via Search API. */
+    private var lastRefreshTimestamp: Instant? = null
 
     // Listeners
     fun interface DataListener {
@@ -73,8 +79,15 @@ class OrbiTrackProjectService(private val project: Project) : Disposable {
 
     // ---- Data fetching ----
 
-    fun refresh() {
+    /**
+     * @param forceFullRefresh when true, bypass the incremental cache and re-fetch
+     *        everything from scratch (used by the manual Refresh button).
+     */
+    fun refresh(forceFullRefresh: Boolean = false) {
         if (isLoading) return
+        if (forceFullRefresh) {
+            lastRefreshTimestamp = null
+        }
         scope.launch {
             isLoading = true
             lastError = null
@@ -105,53 +118,119 @@ class OrbiTrackProjectService(private val project: Project) : Disposable {
                     return@launch
                 }
 
-                // Fetch only latest 20 open issues + 20 open PRs per repo (single page)
-                val freshItems = mutableListOf<OrbiItem>()
-                for (repo in trackedRepos.filter { it.enabled }) {
-                    try {
-                        val issues = client.listIssues(repo.org, repo.repo, state = "open", perPage = 20, page = 1)
-                        val prs = client.listPRs(repo.org, repo.repo, state = "open", perPage = 20, page = 1)
-                        freshItems.addAll(issues)
-                        freshItems.addAll(prs)
-                    } catch (e: Exception) {
-                        log.warn("Failed to fetch ${repo.org}/${repo.repo}", e)
-                    }
+                val enabledRepos = trackedRepos.filter { it.enabled }
+                val refreshStart = Instant.now()
+
+                if (lastRefreshTimestamp != null && items.isNotEmpty()) {
+                    // ---- Incremental refresh via batched Search API ----
+                    performIncrementalRefresh(client, enabledRepos, refreshStart)
+                } else {
+                    // ---- Full initial fetch ----
+                    performFullRefresh(client, enabledRepos, refreshStart)
                 }
-
-                // Delta merge: update existing, add new, keep items not in this fetch (other repos/states)
-                val freshByKey = freshItems.associateBy { Triple(it.org, it.repo, it.number) }
-                val existingByKey = items.associateBy { Triple(it.org, it.repo, it.number) }.toMutableMap()
-
-                // Update or add
-                for ((key, freshItem) in freshByKey) {
-                    val old = existingByKey[key]
-                    if (old == null || old.updatedAt != freshItem.updatedAt) {
-                        existingByKey[key] = freshItem
-                        // Invalidate comment cache for updated items
-                        if (old != null && old.updatedAt != freshItem.updatedAt) {
-                            commentsMap.remove(freshItem.number)
-                        }
-                    }
-                }
-
-                // Remove items that were open but are no longer returned (closed/merged since last fetch)
-                val trackedOrgRepos = trackedRepos.filter { it.enabled }.map { it.org to it.repo }.toSet()
-                existingByKey.entries.removeAll { (key, _) ->
-                    val (org, repo, _) = key
-                    (org to repo) in trackedOrgRepos && key !in freshByKey
-                }
-
-                items = existingByKey.values.sortedByDescending { it.updatedAt }
-                currentPage = 1
-                hasMore = freshItems.size >= 20 // If we got a full page, there might be more
-                isLoading = false
-                notifyListeners()
             } catch (e: Exception) {
                 log.error("Refresh failed", e)
                 lastError = "Fetch failed: ${e.message}"
                 isLoading = false
                 notifyListeners()
             }
+        }
+    }
+
+    private suspend fun performFullRefresh(
+        client: io.orbitrack.idea.api.GitHubClient,
+        enabledRepos: List<TrackedRepo>,
+        refreshStart: Instant
+    ) {
+        val freshItems = mutableListOf<OrbiItem>()
+        for (repo in enabledRepos) {
+            try {
+                val issues = client.listIssues(repo.org, repo.repo, state = "open", perPage = 20, page = 1)
+                val prs = client.listPRs(repo.org, repo.repo, state = "open", perPage = 20, page = 1)
+                freshItems.addAll(issues)
+                freshItems.addAll(prs)
+            } catch (e: Exception) {
+                log.warn("Failed to fetch ${repo.org}/${repo.repo}", e)
+            }
+        }
+
+        // Delta merge: update existing, add new, keep items not in this fetch
+        val freshByKey = freshItems.associateBy { Triple(it.org, it.repo, it.number) }
+        val existingByKey = items.associateBy { Triple(it.org, it.repo, it.number) }.toMutableMap()
+
+        for ((key, freshItem) in freshByKey) {
+            val old = existingByKey[key]
+            if (old == null || old.updatedAt != freshItem.updatedAt) {
+                existingByKey[key] = freshItem
+                if (old != null && old.updatedAt != freshItem.updatedAt) {
+                    commentsMap.remove(freshItem.number)
+                    timelineMap.remove(freshItem.number)
+                }
+            }
+        }
+
+        // Remove items that were open but are no longer returned
+        val trackedOrgRepos = enabledRepos.map { it.org to it.repo }.toSet()
+        existingByKey.entries.removeAll { (key, _) ->
+            val (org, repo, _) = key
+            (org to repo) in trackedOrgRepos && key !in freshByKey
+        }
+
+        items = existingByKey.values.sortedByDescending { it.updatedAt }
+        currentPage = 1
+        hasMore = freshItems.size >= 20
+        lastRefreshTimestamp = refreshStart
+        isLoading = false
+        notifyListeners()
+    }
+
+    private suspend fun performIncrementalRefresh(
+        client: io.orbitrack.idea.api.GitHubClient,
+        enabledRepos: List<TrackedRepo>,
+        refreshStart: Instant
+    ) {
+        try {
+            val repoPairs = enabledRepos.map { it.org to it.repo }
+            val updatedItems = mutableListOf<OrbiItem>()
+            var page = 1
+            // Paginate search results (up to 5 pages of 100 to stay within rate limits)
+            do {
+                val batch = client.searchUpdatedItems(repoPairs, lastRefreshTimestamp!!, perPage = 100, page = page)
+                updatedItems.addAll(batch)
+                page++
+            } while (batch.size == 100 && page <= 5)
+
+            // Merge updated items into existing cache
+            val existingByKey = items.associateBy { Triple(it.org, it.repo, it.number) }.toMutableMap()
+
+            for (freshItem in updatedItems) {
+                val key = Triple(freshItem.org, freshItem.repo, freshItem.number)
+                val old = existingByKey[key]
+
+                // Item's state changed (e.g. open → closed/merged) — remove from cache
+                if (old != null && old.state != freshItem.state) {
+                    existingByKey.remove(key)
+                    commentsMap.remove(freshItem.number)
+                    timelineMap.remove(freshItem.number)
+                    continue
+                }
+
+                if (old == null || old.updatedAt != freshItem.updatedAt) {
+                    existingByKey[key] = freshItem
+                    commentsMap.remove(freshItem.number)
+                    timelineMap.remove(freshItem.number)
+                }
+            }
+
+            items = existingByKey.values.sortedByDescending { it.updatedAt }
+            lastRefreshTimestamp = refreshStart
+            isLoading = false
+            notifyListeners()
+        } catch (e: Exception) {
+            log.warn("Incremental refresh failed, falling back to full refresh", e)
+            // Reset timestamp so next call does a full refresh
+            lastRefreshTimestamp = null
+            performFullRefresh(client, enabledRepos, refreshStart)
         }
     }
 
@@ -189,6 +268,33 @@ class OrbiTrackProjectService(private val project: Project) : Disposable {
                 log.warn("Fetch more failed", e)
                 isLoading = false
                 notifyListeners()
+            }
+        }
+    }
+
+    // ---- Create Issue ----
+
+    fun createIssue(
+        org: String,
+        repo: String,
+        title: String,
+        body: String,
+        labels: List<String>,
+        assignees: List<String>,
+        onResult: (Boolean, String?) -> Unit
+    ) {
+        scope.launch {
+            try {
+                val client = OrbiTrackAppService.getInstance().getClient()
+                    ?: run { onResult(false, "No GitHub token configured."); return@launch }
+                val newItem = client.createIssue(org, repo, title, body, labels, assignees)
+                // Prepend to cached items
+                items = listOf(newItem) + items
+                onResult(true, null)
+                notifyListeners()
+            } catch (e: Exception) {
+                log.warn("Failed to create issue in $org/$repo", e)
+                onResult(false, e.message)
             }
         }
     }
@@ -268,6 +374,24 @@ class OrbiTrackProjectService(private val project: Project) : Disposable {
         val fresh = client.getComments(item.org, item.repo, item.number, perPage = 30, page = 1)
             .map { c -> c.copy(itemId = item.id, canEdit = (authenticatedUser != null && c.author == authenticatedUser)) }
         commentsMap[item.number] = fresh
+    }
+
+    // ---- Timeline (lazy, on-demand) ----
+
+    fun getTimeline(itemNumber: Int): List<OrbiTimelineEvent> = timelineMap[itemNumber].orEmpty()
+
+    fun loadTimeline(item: OrbiItem) {
+        if (timelineMap.containsKey(item.number)) return
+        scope.launch {
+            try {
+                val client = OrbiTrackAppService.getInstance().getClient() ?: return@launch
+                val events = client.getTimeline(item.org, item.repo, item.number)
+                timelineMap[item.number] = events
+                notifyListeners()
+            } catch (e: Exception) {
+                log.warn("Failed to fetch timeline for ${item.org}/${item.repo}#${item.number}", e)
+            }
+        }
     }
 
     override fun dispose() {

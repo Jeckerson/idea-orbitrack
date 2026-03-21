@@ -2,6 +2,8 @@ package io.orbitrack.idea.api
 
 import io.orbitrack.idea.model.OrbiComment
 import io.orbitrack.idea.model.OrbiItem
+import io.orbitrack.idea.model.OrbiTimelineEvent
+import java.time.Instant
 
 interface GitHubClient {
     suspend fun listIssues(org: String, repo: String, state: String = "open", perPage: Int = 20, page: Int = 1): List<OrbiItem>
@@ -12,5 +14,15 @@ interface GitHubClient {
     suspend fun deleteComment(org: String, repo: String, commentId: Long)
     suspend fun listOrgs(): List<String>
     suspend fun listRepos(org: String): List<String>
+    suspend fun getAuthenticatedUser(): String?
+
+    /** Batch search for issues/PRs updated since [since] across multiple repos. */
+    suspend fun searchUpdatedItems(repos: List<Pair<String, String>>, since: Instant, perPage: Int = 100, page: Int = 1): List<OrbiItem>
+
+    /** Create a new issue in the given repo. */
+    suspend fun createIssue(org: String, repo: String, title: String, body: String, labels: List<String> = emptyList(), assignees: List<String> = emptyList()): OrbiItem
+
+    /** Fetch timeline events for an issue/PR. */
+    suspend fun getTimeline(org: String, repo: String, number: Int, perPage: Int = 100, page: Int = 1): List<OrbiTimelineEvent>
 }
 

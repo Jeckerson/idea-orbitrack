@@ -36,6 +36,11 @@
                 class="io.orbitrack.idea.actions.RefreshAction"
                 text="Refresh"
                 icon="AllIcons.Actions.Refresh"/>
+        <action id="OrbiTrack.CreateIssue"
+                class="io.orbitrack.idea.actions.CreateIssueAction"
+                text="New Issue"
+                description="Create a new GitHub issue"
+                icon="AllIcons.General.Add"/>
     </actions>
 </idea-plugin>
 

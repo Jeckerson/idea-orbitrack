@@ -9,6 +9,7 @@ import io.orbitrack.idea.model.ItemState
 import io.orbitrack.idea.model.ItemType
 import io.orbitrack.idea.model.OrbiComment
 import io.orbitrack.idea.model.OrbiItem
+import io.orbitrack.idea.model.OrbiTimelineEvent
 import java.awt.BorderLayout
 import java.awt.Cursor
 import java.awt.Dimension
@@ -56,7 +57,7 @@ class ItemDetailPanel : JPanel(BorderLayout()) {
         repaint()
     }
 
-    fun showItem(item: OrbiItem, comments: List<OrbiComment>) {
+    fun showItem(item: OrbiItem, comments: List<OrbiComment>, timeline: List<OrbiTimelineEvent> = emptyList()) {
         removeAll()
         currentItem = item
 
@@ -154,6 +155,26 @@ class ItemDetailPanel : JPanel(BorderLayout()) {
             }
         }
 
+        // --- Timeline / History ---
+        val historyBox = JPanel().apply {
+            layout = BoxLayout(this, BoxLayout.Y_AXIS)
+            isOpaque = false
+            alignmentX = LEFT_ALIGNMENT
+            border = JBUI.Borders.emptyTop(6)
+        }
+        if (timeline.isNotEmpty()) {
+            val historyHeader = JBLabel("History (${timeline.size})").apply {
+                font = font.deriveFont(Font.BOLD, 12f)
+                alignmentX = LEFT_ALIGNMENT
+                border = JBUI.Borders.empty(4, 0)
+            }
+            historyBox.add(historyHeader)
+            for (event in timeline) {
+                historyBox.add(makeTimelineEntry(event))
+                historyBox.add(Box.createRigidArea(Dimension(0, 2)))
+            }
+        }
+
         // --- Action bar ---
         val actions = JPanel(FlowLayout(FlowLayout.LEFT, 8, 0)).apply {
             isOpaque = false
@@ -194,6 +215,7 @@ class ItemDetailPanel : JPanel(BorderLayout()) {
             border = JBUI.Borders.emptyLeft(4)
             add(bodyPane)
             add(commentsBox)
+            add(historyBox)
             add(actions)
             add(Box.createVerticalGlue())
         }
@@ -341,6 +363,34 @@ class ItemDetailPanel : JPanel(BorderLayout()) {
         }
         val clipboard = java.awt.Toolkit.getDefaultToolkit().systemClipboard
         clipboard.setContents(StringSelection(ctx), null)
+    }
+
+    private fun makeTimelineEntry(event: OrbiTimelineEvent): JPanel = JPanel(BorderLayout()).apply {
+        isOpaque = false
+        alignmentX = LEFT_ALIGNMENT
+        maximumSize = Dimension(Int.MAX_VALUE, 24)
+        border = JBUI.Borders.empty(1, 0)
+
+        val icon = when (event.type) {
+            "labeled", "unlabeled" -> "\uD83C\uDFF7\uFE0F"   // 🏷️
+            "assigned", "unassigned" -> "\uD83D\uDC64"         // 👤
+            "milestoned", "demilestoned" -> "\uD83C\uDFAF"     // 🎯
+            "closed" -> "\u2705"                                 // ✅
+            "reopened" -> "\uD83D\uDD04"                        // 🔄
+            "merged" -> "\uD83D\uDFE3"                           // 🟣
+            "renamed" -> "\u270F\uFE0F"                          // ✏️
+            "locked", "unlocked" -> "\uD83D\uDD12"              // 🔒
+            else -> "\u2022"                                     // •
+        }
+        val timeAgo = ItemCellRenderer.formatTimeAgo(event.timestamp)
+        val actor = event.actor?.let { "@$it" } ?: "someone"
+        val text = "$icon $actor ${event.detail} $middot $timeAgo"
+
+        val label = JBLabel(text).apply {
+            foreground = JBColor.GRAY
+            font = font.deriveFont(font.size2D - 1f)
+        }
+        add(label, BorderLayout.CENTER)
     }
 
     private fun esc(s: String) = s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")

@@ -3,6 +3,7 @@ package io.orbitrack.idea.settings
 import com.intellij.openapi.options.Configurable
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBPasswordField
+import com.intellij.util.SlowOperations
 import com.intellij.util.ui.FormBuilder
 import com.intellij.util.ui.JBUI
 import io.orbitrack.idea.services.OrbiTrackAppService
@@ -13,6 +14,9 @@ class OrbiTrackConfigurable : Configurable {
 
     private var tokenField: JBPasswordField? = null
     private var mainPanel: JPanel? = null
+
+    /** Cached token read from PasswordSafe during reset(), used by isModified() to avoid EDT-blocking calls. */
+    private var cachedToken: String = ""
 
     override fun getDisplayName(): String = "OrbiTrack"
 
@@ -31,18 +35,21 @@ class OrbiTrackConfigurable : Configurable {
     }
 
     override fun isModified(): Boolean {
-        val currentToken = OrbiTrackAppService.getInstance().token.orEmpty()
         val fieldValue = String(tokenField?.password ?: charArrayOf())
-        return currentToken != fieldValue
+        return cachedToken != fieldValue
     }
 
     override fun apply() {
         val value = String(tokenField?.password ?: charArrayOf())
         OrbiTrackAppService.getInstance().token = value.ifBlank { null }
+        cachedToken = value
     }
 
     override fun reset() {
-        val current = OrbiTrackAppService.getInstance().token.orEmpty()
+        val current = SlowOperations.allowSlowOperations<String, Nothing> {
+            OrbiTrackAppService.getInstance().token.orEmpty()
+        }
+        cachedToken = current
         tokenField?.text = current
     }
 

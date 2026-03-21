@@ -89,6 +89,7 @@ class OrbiTrackPanel(private val project: Project) : JPanel(BorderLayout()), Dis
         // --- toolbar ---
         val actionGroup = DefaultActionGroup().apply {
             ActionManager.getInstance().getAction("OrbiTrack.Refresh")?.let(::add)
+            ActionManager.getInstance().getAction("OrbiTrack.CreateIssue")?.let(::add)
         }
         val toolbar = ActionManager.getInstance()
             .createActionToolbar(ActionPlaces.TOOLWINDOW_CONTENT, actionGroup, true)
@@ -121,8 +122,13 @@ class OrbiTrackPanel(private val project: Project) : JPanel(BorderLayout()), Dis
             if (!e.valueIsAdjusting) {
                 val sel = itemList.selectedValue
                 if (sel is ListEntry.Item) {
-                    detailPanel.showItem(sel.item, service.getComments(sel.item.number))
+                    detailPanel.showItem(
+                        sel.item,
+                        service.getComments(sel.item.number),
+                        service.getTimeline(sel.item.number)
+                    )
                     service.loadComments(sel.item)
+                    service.loadTimeline(sel.item)
                 } else {
                     detailPanel.showEmpty()
                 }
@@ -162,18 +168,23 @@ class OrbiTrackPanel(private val project: Project) : JPanel(BorderLayout()), Dis
         filterPanel.updateOrgRepoChoices(items)
         applyFilters()
 
-        // Refresh detail if selected item's comments were loaded
+        // Refresh detail if selected item's comments/timeline were loaded
         val sel = itemList.selectedValue
         if (sel is ListEntry.Item) {
-            detailPanel.showItem(sel.item, svc.getComments(sel.item.number))
+            detailPanel.showItem(
+                sel.item,
+                svc.getComments(sel.item.number),
+                svc.getTimeline(sel.item.number)
+            )
         }
     }
 
     private fun applyFilters() {
         val filtered = filterPanel.applyFilter(service.items)
+        val sorted = filterPanel.applySort(filtered)
         val selectedItem = (itemList.selectedValue as? ListEntry.Item)?.item
 
-        val entries = buildGroupedEntries(filtered, filterPanel.groupMode)
+        val entries = buildGroupedEntries(sorted, filterPanel.groupModes)
 
         listModel.clear()
         entries.forEach { listModel.addElement(it) }
@@ -190,22 +201,35 @@ class OrbiTrackPanel(private val project: Project) : JPanel(BorderLayout()), Dis
         }
     }
 
-    private fun buildGroupedEntries(items: List<OrbiItem>, mode: GroupMode): List<ListEntry> {
-        if (mode == GroupMode.PLAIN || items.isEmpty()) {
+    /**
+     * Recursively groups items by the ordered list of [modes].
+     * Empty modes list = flat list (no grouping).
+     */
+    private fun buildGroupedEntries(items: List<OrbiItem>, modes: List<GroupMode>): List<ListEntry> {
+        if (modes.isEmpty() || items.isEmpty()) {
             return items.map { ListEntry.Item(it) }
         }
+        return buildGrouped(items, modes, depth = 0)
+    }
+
+    private fun buildGrouped(items: List<OrbiItem>, modes: List<GroupMode>, depth: Int): List<ListEntry> {
+        if (modes.isEmpty()) {
+            return items.map { ListEntry.Item(it, depth) }
+        }
+
+        val mode = modes.first()
+        val rest = modes.drop(1)
 
         val grouped: Map<String, List<OrbiItem>> = when (mode) {
             GroupMode.BY_ORG -> items.groupBy { it.org }
             GroupMode.BY_REPO -> items.groupBy { "${it.org}/${it.repo}" }
             GroupMode.BY_TYPE -> items.groupBy { if (it.type == ItemType.PR) "Pull Requests" else "Issues" }
-            GroupMode.PLAIN -> error("unreachable")
         }
 
         val result = mutableListOf<ListEntry>()
         for ((key, group) in grouped.toSortedMap()) {
-            result.add(ListEntry.Header("$key (${group.size})"))
-            group.forEach { result.add(ListEntry.Item(it)) }
+            result.add(ListEntry.Header("$key (${group.size})", depth))
+            result.addAll(buildGrouped(group, rest, depth + 1))
         }
         return result
     }

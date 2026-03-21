@@ -43,3 +43,10 @@ data class TrackedRepo(
     val enabled: Boolean,
 )
 
+data class OrbiTimelineEvent(
+    val type: String,        // e.g. "labeled", "closed", "assigned", "renamed", etc.
+    val actor: String?,
+    val detail: String,      // human-readable detail, e.g. "added label bug"
+    val timestamp: Instant,
+)
+
