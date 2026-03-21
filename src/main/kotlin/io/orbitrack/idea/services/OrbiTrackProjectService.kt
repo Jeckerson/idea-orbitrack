@@ -5,6 +5,10 @@ import com.intellij.openapi.components.Service
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.project.Project
 import io.orbitrack.idea.api.GhPullDetail
+import io.orbitrack.idea.cache.CachedState
+import io.orbitrack.idea.cache.OrbiCacheManager
+import io.orbitrack.idea.cache.OrbiCacheManager.Companion.toCached
+import io.orbitrack.idea.cache.OrbiCacheManager.Companion.toOrbiItem
 import io.orbitrack.idea.model.OrbiComment
 import io.orbitrack.idea.model.OrbiItem
 import io.orbitrack.idea.model.OrbiTimelineEvent
@@ -24,6 +28,7 @@ class OrbiTrackProjectService(private val project: Project) : Disposable {
 
     private val log = Logger.getInstance(OrbiTrackProjectService::class.java)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val cacheManager = OrbiCacheManager(project)
 
     var trackedRepos: List<TrackedRepo> = emptyList()
         private set
@@ -38,6 +43,15 @@ class OrbiTrackProjectService(private val project: Project) : Disposable {
 
     /** Timestamp of the last successful refresh, used for incremental fetches via Search API. */
     private var lastRefreshTimestamp: Instant? = null
+
+    /** Whether cached data was restored on startup (prevents "Loading…" flash). */
+    var restoredFromCache: Boolean = false
+        private set
+
+    init {
+        // Restore last known state from disk cache immediately (synchronous, fast)
+        loadFromCache()
+    }
 
     // Listeners
     fun interface DataListener {
@@ -73,6 +87,44 @@ class OrbiTrackProjectService(private val project: Project) : Disposable {
     private var currentPage = 1
     var hasMore: Boolean = true
         private set
+
+    // ---- Cache persistence ----
+
+    private fun loadFromCache() {
+        try {
+            val cached = cacheManager.load() ?: return
+            if (cached.items.isEmpty()) return
+
+            items = cached.items.map { it.toOrbiItem() }
+            trackedRepos = cached.trackedRepos
+            lastRefreshTimestamp = cached.lastRefreshEpoch?.let { Instant.ofEpochMilli(it) }
+            restoredFromCache = true
+
+            log.info("Restored ${items.size} items from cache (saved ${
+                java.time.Duration.between(
+                    Instant.ofEpochMilli(cached.savedAtEpoch), Instant.now()
+                ).toMinutes()
+            } min ago)")
+        } catch (e: Exception) {
+            log.warn("Failed to load from cache", e)
+        }
+    }
+
+    private fun persistToCache() {
+        scope.launch {
+            try {
+                val state = CachedState(
+                    items = items.map { it.toCached() },
+                    trackedRepos = trackedRepos,
+                    lastRefreshEpoch = lastRefreshTimestamp?.toEpochMilli(),
+                    savedAtEpoch = Instant.now().toEpochMilli(),
+                )
+                cacheManager.save(state)
+            } catch (e: Exception) {
+                log.warn("Failed to persist cache", e)
+            }
+        }
+    }
 
     // ---- Auto-detection ----
 
@@ -125,6 +177,7 @@ class OrbiTrackProjectService(private val project: Project) : Disposable {
                 }
 
                 onResult?.invoke(true, null)
+                persistToCache()
                 notifyListeners()
             } catch (e: Exception) {
                 log.warn("Failed to refresh item ${item.org}/${item.repo}#${item.number}", e)
@@ -235,6 +288,7 @@ class OrbiTrackProjectService(private val project: Project) : Disposable {
         hasMore = freshItems.size >= 20
         lastRefreshTimestamp = refreshStart
         isLoading = false
+        persistToCache()
         notifyListeners()
     }
 
@@ -279,6 +333,7 @@ class OrbiTrackProjectService(private val project: Project) : Disposable {
             items = existingByKey.values.sortedByDescending { it.updatedAt }
             lastRefreshTimestamp = refreshStart
             isLoading = false
+            persistToCache()
             notifyListeners()
         } catch (e: Exception) {
             log.warn("Incremental refresh failed, falling back to full refresh", e)
@@ -317,6 +372,7 @@ class OrbiTrackProjectService(private val project: Project) : Disposable {
                     items = (items + newOnly).sortedByDescending { it.updatedAt }
                 }
                 isLoading = false
+                persistToCache()
                 notifyListeners()
             } catch (e: Exception) {
                 log.warn("Fetch more failed", e)
@@ -345,6 +401,7 @@ class OrbiTrackProjectService(private val project: Project) : Disposable {
                 // Prepend to cached items
                 items = listOf(newItem) + items
                 onResult(true, null)
+                persistToCache()
                 notifyListeners()
             } catch (e: Exception) {
                 log.warn("Failed to create issue in $org/$repo", e)
@@ -535,6 +592,7 @@ class OrbiTrackProjectService(private val project: Project) : Disposable {
                     }
                     pullDetailMap.remove(item.number)
                     onResult(true, null)
+                    persistToCache()
                     notifyListeners()
                 } else {
                     onResult(false, result.message)
@@ -661,6 +719,16 @@ class OrbiTrackProjectService(private val project: Project) : Disposable {
         }
 
     override fun dispose() {
+        // Final persist (synchronous, best-effort)
+        try {
+            val state = CachedState(
+                items = items.map { it.toCached() },
+                trackedRepos = trackedRepos,
+                lastRefreshEpoch = lastRefreshTimestamp?.toEpochMilli(),
+                savedAtEpoch = Instant.now().toEpochMilli(),
+            )
+            cacheManager.save(state)
+        } catch (_: Exception) { }
         scope.cancel()
         listeners.clear()
     }

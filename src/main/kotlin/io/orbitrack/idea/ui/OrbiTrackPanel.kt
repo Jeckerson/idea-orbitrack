@@ -198,7 +198,12 @@ class OrbiTrackPanel(private val project: Project) : JPanel(BorderLayout()), Dis
         // --- subscribe to service ---
         service.addDataListener(dataListener)
 
-        // --- detect repos and start initial fetch ---
+        // --- show cached data immediately if available ---
+        if (service.restoredFromCache && service.items.isNotEmpty()) {
+            onDataChanged()
+        }
+
+        // --- detect repos and start background sync ---
         service.detectRepos()
         service.refresh()
     }
@@ -207,9 +212,16 @@ class OrbiTrackPanel(private val project: Project) : JPanel(BorderLayout()), Dis
         val svc = service
 
         if (svc.isLoading) {
-            itemList.emptyText.text = "Loading\u2026"
-            loadMoreButton.isEnabled = false
-            loadMoreButton.text = "Loading\u2026"
+            if (svc.items.isNotEmpty()) {
+                // Items from cache are shown — just indicate background sync
+                itemList.emptyText.text = "Syncing\u2026"
+                loadMoreButton.isEnabled = false
+                loadMoreButton.text = "Syncing\u2026"
+            } else {
+                itemList.emptyText.text = "Loading\u2026"
+                loadMoreButton.isEnabled = false
+                loadMoreButton.text = "Loading\u2026"
+            }
         } else if (svc.lastError != null) {
             itemList.emptyText.text = svc.lastError!!
             loadMoreButton.isEnabled = false
