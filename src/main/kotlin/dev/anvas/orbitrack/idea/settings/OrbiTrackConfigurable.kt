@@ -1,9 +1,9 @@
 package dev.anvas.orbitrack.idea.settings
 
+import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.options.Configurable
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBPasswordField
-import com.intellij.util.SlowOperations
 import com.intellij.util.ui.FormBuilder
 import com.intellij.util.ui.JBUI
 import dev.anvas.orbitrack.idea.services.OrbiTrackAppService
@@ -46,11 +46,13 @@ class OrbiTrackConfigurable : Configurable {
     }
 
     override fun reset() {
-        val current = SlowOperations.allowSlowOperations<String, Nothing> {
-            OrbiTrackAppService.getInstance().token.orEmpty()
+        ApplicationManager.getApplication().executeOnPooledThread {
+            val current = OrbiTrackAppService.getInstance().token.orEmpty()
+            cachedToken = current
+            ApplicationManager.getApplication().invokeLater {
+                tokenField?.text = current
+            }
         }
-        cachedToken = current
-        tokenField?.text = current
     }
 
     override fun disposeUIResources() {
