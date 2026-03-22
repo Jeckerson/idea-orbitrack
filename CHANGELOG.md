@@ -12,7 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Extended IDE compatibility range from `251.*` to `253.*` to support IntelliJ Platform 2025.3 builds
 - Replaced deprecated `SlowOperations.allowSlowOperations()` call in `OrbiTrackConfigurable.reset()` with proper background-thread execution (`executeOnPooledThread`) to avoid future removal breakage and comply with IntelliJ Platform threading guidelines
 
-## [1.0.0] — Unreleased
+## [1.0.0] — 2026-03-21
 
 ### Added
 
