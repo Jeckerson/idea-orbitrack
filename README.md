@@ -241,38 +241,6 @@ src/main/kotlin/io/orbitrack/idea/
 
 ---
 
-## Roadmap
-
-### v1 — Current
-- [x] Plugin scaffold and build configuration
-- [x] GitHub PAT auth with credential store
-- [x] GitHub API client (issues, PRs, comments, timeline, merge)
-- [x] JSON cache with incremental sync
-- [x] Auto-detection of GitHub repos from project
-- [x] Tool window with unified list and filters
-- [x] Detail panel with markdown rendering
-- [x] Comment CRUD (create, edit, delete)
-- [x] LLM context extraction to clipboard
-- [x] PR management (merge, checkout)
-- [x] Issue creation
-- [x] Settings UI
-- [x] GitHub Actions CI/CD
-- [ ] Background auto-sync with configurable interval
-- [ ] First-run balloon notification (Track All / Select / Ignore)
-
-### v2 — Planned
-- [ ] LLM integration (BYOK) — Anthropic, OpenAI, Copilot, Ollama
-- [ ] Handwritten note → LLM-drafted comment → one-click post
-- [ ] GitHub App authentication (replace PAT for teams)
-- [ ] Duplicate detection via local embeddings
-- [ ] Auto-label suggestions
-- [ ] Keyboard-driven triage mode
-- [ ] Bulk operations (close, label, assign)
-- [ ] JetBrains Marketplace listing
-- [ ] MCP server for external LLM tool access
-
----
-
 ## License
 
 This project is licensed under the Apache License 2.0 — see the [LICENSE](LICENSE) file for details.
