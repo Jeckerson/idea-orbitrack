@@ -37,6 +37,9 @@ class ItemDetailPanel : JPanel(BorderLayout()) {
     /** Callback when user wants to refresh this single item. Receives (item). */
     var onRefreshItem: ((OrbiItem) -> Unit)? = null
 
+    /** Callback when user wants to export issue/PR as a .md file. Receives (item, comments). */
+    var onCreateMdFile: ((OrbiItem, List<OrbiComment>) -> Unit)? = null
+
     private var currentItem: OrbiItem? = null
     private var isItemLoading: Boolean = false
 
@@ -293,6 +296,10 @@ class ItemDetailPanel : JPanel(BorderLayout()) {
             })
             add(JButton("Copy LLM Context").apply {
                 addActionListener { copyContext(item, comments) }
+            })
+            add(JButton("\uD83D\uDCC4 Create .md file").apply {
+                toolTipText = "Save issue/PR as a Markdown file in the project root"
+                addActionListener { onCreateMdFile?.invoke(item, comments) }
             })
         }
 
