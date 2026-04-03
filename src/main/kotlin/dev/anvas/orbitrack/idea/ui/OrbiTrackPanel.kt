@@ -5,15 +5,22 @@ import com.intellij.openapi.actionSystem.ActionManager
 import com.intellij.openapi.actionSystem.ActionPlaces
 import com.intellij.openapi.actionSystem.DefaultActionGroup
 import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.command.WriteCommandAction
+import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.ui.JBSplitter
 import com.intellij.ui.components.JBList
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.util.ui.JBUI
 import dev.anvas.orbitrack.idea.model.ItemType
+import dev.anvas.orbitrack.idea.model.OrbiComment
 import dev.anvas.orbitrack.idea.model.OrbiItem
 import dev.anvas.orbitrack.idea.services.OrbiTrackProjectService
 import java.awt.BorderLayout
+import java.io.File
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 import javax.swing.*
 
 class OrbiTrackPanel(private val project: Project) : JPanel(BorderLayout()), Disposable {
@@ -125,6 +132,32 @@ class OrbiTrackPanel(private val project: Project) : JPanel(BorderLayout()), Dis
                                 "OrbiTrack",
                                 JOptionPane.ERROR_MESSAGE
                             )
+                        }
+                    }
+                }
+            }
+        }
+        onCreateMdFile = { item, comments ->
+            val basePath = project.basePath
+            if (basePath == null) {
+                JOptionPane.showMessageDialog(
+                    this@OrbiTrackPanel,
+                    "Cannot determine project base path.",
+                    "OrbiTrack",
+                    JOptionPane.ERROR_MESSAGE
+                )
+            } else {
+                val typeStr = item.type.name.lowercase()
+                val filename = "$typeStr-${item.org}-${item.repo}-${item.number}.md"
+                val targetFile = File(basePath, filename)
+                val content = buildMdFileContent(item, comments)
+
+                WriteCommandAction.runWriteCommandAction(project) {
+                    targetFile.writeText(content)
+                    val vFile = LocalFileSystem.getInstance().refreshAndFindFileByIoFile(targetFile)
+                    if (vFile != null) {
+                        ApplicationManager.getApplication().invokeLater {
+                            FileEditorManager.getInstance(project).openFile(vFile, true)
                         }
                     }
                 }
@@ -326,6 +359,45 @@ class OrbiTrackPanel(private val project: Project) : JPanel(BorderLayout()), Dis
             result.addAll(buildGrouped(group, rest, depth + 1))
         }
         return result
+    }
+
+    private fun buildMdFileContent(item: OrbiItem, comments: List<OrbiComment>): String {
+        val dateFmt = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")
+            .withZone(ZoneId.systemDefault())
+        val typeStr = if (item.type == ItemType.PR) "PR" else "Issue"
+        return buildString {
+            appendLine("# $typeStr #${item.number}: ${item.title}")
+            appendLine()
+            appendLine("**Repo:** ${item.org}/${item.repo}")
+            appendLine("**State:** ${item.state.name.lowercase()}")
+            appendLine("**Labels:** ${item.labels.joinToString().ifEmpty { "—" }}")
+            appendLine("**Author:** @${item.author}")
+            if (item.assignees.isNotEmpty()) {
+                appendLine("**Assignees:** ${item.assignees.joinToString { "@$it" }}")
+            }
+            item.milestone?.let { appendLine("**Milestone:** $it") }
+            appendLine("**URL:** ${item.url}")
+            appendLine("**Opened:** ${dateFmt.format(item.createdAt)}")
+            appendLine("**Updated:** ${dateFmt.format(item.updatedAt)}")
+            appendLine()
+            appendLine("---")
+            appendLine()
+            appendLine("## Description")
+            appendLine()
+            appendLine(item.body.ifBlank { "*(no description)*" })
+            if (comments.isNotEmpty()) {
+                appendLine()
+                appendLine("---")
+                appendLine()
+                appendLine("## Comments (${comments.size})")
+                for (c in comments) {
+                    appendLine()
+                    appendLine("### @${c.author} · ${dateFmt.format(c.createdAt)}")
+                    appendLine()
+                    appendLine(c.body)
+                }
+            }
+        }
     }
 
     override fun dispose() {
