@@ -16,6 +16,7 @@ import com.intellij.util.ui.JBUI
 import dev.anvas.orbitrack.idea.model.ItemType
 import dev.anvas.orbitrack.idea.model.OrbiComment
 import dev.anvas.orbitrack.idea.model.OrbiItem
+import dev.anvas.orbitrack.idea.model.OrbiReviewComment
 import dev.anvas.orbitrack.idea.services.OrbiTrackProjectService
 import java.awt.BorderLayout
 import java.io.File
@@ -137,7 +138,7 @@ class OrbiTrackPanel(private val project: Project) : JPanel(BorderLayout()), Dis
                 }
             }
         }
-        onCreateMdFile = { item, comments ->
+        onCreateMdFile = { item, comments, reviewComments ->
             val basePath = project.basePath
             if (basePath == null) {
                 JOptionPane.showMessageDialog(
@@ -150,7 +151,7 @@ class OrbiTrackPanel(private val project: Project) : JPanel(BorderLayout()), Dis
                 val typeStr = item.type.name.lowercase()
                 val filename = "$typeStr-${item.org}-${item.repo}-${item.number}.md"
                 val targetFile = File(basePath, filename)
-                val content = buildMdFileContent(item, comments)
+                val content = buildMdFileContent(item, comments, reviewComments)
 
                 WriteCommandAction.runWriteCommandAction(project) {
                     targetFile.writeText(content)
@@ -383,7 +384,11 @@ class OrbiTrackPanel(private val project: Project) : JPanel(BorderLayout()), Dis
         return result
     }
 
-    private fun buildMdFileContent(item: OrbiItem, comments: List<OrbiComment>): String {
+    private fun buildMdFileContent(
+        item: OrbiItem,
+        comments: List<OrbiComment>,
+        reviewComments: List<OrbiReviewComment> = emptyList(),
+    ): String {
         val dateFmt = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")
             .withZone(ZoneId.systemDefault())
         val typeStr = if (item.type == ItemType.PR) "PR" else "Issue"
@@ -417,6 +422,32 @@ class OrbiTrackPanel(private val project: Project) : JPanel(BorderLayout()), Dis
                     appendLine("### @${c.author} · ${dateFmt.format(c.createdAt)}")
                     appendLine()
                     appendLine(c.body)
+                }
+            }
+            if (reviewComments.isNotEmpty()) {
+                appendLine()
+                appendLine("---")
+                appendLine()
+                appendLine("## Code Review (${reviewComments.size} inline comments)")
+                val byPath = reviewComments.groupBy { it.path }
+                for ((path, pathComments) in byPath) {
+                    appendLine()
+                    appendLine("### `$path`")
+                    for (rc in pathComments) {
+                        appendLine()
+                        val replyTag = if (rc.inReplyToId != null) " ↩ reply" else ""
+                        val suggestionTag = if (rc.isSuggestion) " 💡 suggestion" else ""
+                        val lineTag = rc.line?.let { " · line $it" } ?: ""
+                        appendLine("#### @${rc.author}$lineTag$suggestionTag$replyTag · ${dateFmt.format(rc.createdAt)}")
+                        appendLine()
+                        if (rc.diffHunk.isNotBlank()) {
+                            appendLine("```diff")
+                            appendLine(rc.diffHunk)
+                            appendLine("```")
+                            appendLine()
+                        }
+                        appendLine(rc.body)
+                    }
                 }
             }
         }

@@ -38,8 +38,9 @@ class ItemDetailPanel : JPanel(BorderLayout()) {
     /** Callback when user wants to refresh this single item. Receives (item). */
     var onRefreshItem: ((OrbiItem) -> Unit)? = null
 
-    /** Callback when user wants to export issue/PR as a .md file. Receives (item, comments). */
-    var onCreateMdFile: ((OrbiItem, List<OrbiComment>) -> Unit)? = null
+    /** Callback when user wants to export issue/PR as a .md file.
+     *  Receives (item, conversation comments, review comments). */
+    var onCreateMdFile: ((OrbiItem, List<OrbiComment>, List<OrbiReviewComment>) -> Unit)? = null
 
     /** Callback to lazily load all PR review comments (removes the 30-item cap). */
     var onLoadAllReviewComments: ((OrbiItem) -> Unit)? = null
@@ -361,11 +362,11 @@ class ItemDetailPanel : JPanel(BorderLayout()) {
                 }
             })
             add(JButton("Copy LLM Context").apply {
-                addActionListener { copyContext(item, comments) }
+                addActionListener { copyContext(item, comments, reviewComments) }
             })
             add(JButton("\uD83D\uDCC4 Create .md file").apply {
                 toolTipText = "Save issue/PR as a Markdown file in the project root"
-                addActionListener { onCreateMdFile?.invoke(item, comments) }
+                addActionListener { onCreateMdFile?.invoke(item, comments, reviewComments) }
             })
         }
 
@@ -741,7 +742,7 @@ class ItemDetailPanel : JPanel(BorderLayout()) {
         border = JBUI.Borders.empty(2, 6, 2, 6)
     }
 
-    private fun copyContext(item: OrbiItem, comments: List<OrbiComment>) {
+    private fun copyContext(item: OrbiItem, comments: List<OrbiComment>, reviewComments: List<OrbiReviewComment>) {
         val ctx = buildString {
             val t = if (item.type == ItemType.PR) "PR" else "Issue"
             appendLine("## $t: ${item.title} (#${item.number})")
@@ -759,6 +760,29 @@ class ItemDetailPanel : JPanel(BorderLayout()) {
                     appendLine("**@${c.author}** $middot ${c.createdAt}")
                     appendLine(c.body)
                     appendLine("---")
+                }
+            }
+            if (reviewComments.isNotEmpty()) {
+                appendLine()
+                appendLine("### Code Review Comments (${reviewComments.size})")
+                val byPath = reviewComments.groupBy { it.path }
+                for ((path, pathComments) in byPath) {
+                    appendLine()
+                    appendLine("#### `$path`")
+                    for (rc in pathComments) {
+                        appendLine()
+                        val replyTag = if (rc.inReplyToId != null) " ↩ reply" else ""
+                        val suggestionTag = if (rc.isSuggestion) " 💡 suggestion" else ""
+                        val lineTag = rc.line?.let { " · line $it" } ?: ""
+                        appendLine("**@${rc.author}**$lineTag$suggestionTag$replyTag $middot ${rc.createdAt}")
+                        if (rc.diffHunk.isNotBlank()) {
+                            appendLine("```diff")
+                            appendLine(rc.diffHunk)
+                            appendLine("```")
+                        }
+                        appendLine(rc.body)
+                        appendLine("---")
+                    }
                 }
             }
             appendLine()
