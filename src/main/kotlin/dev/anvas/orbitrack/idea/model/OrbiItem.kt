@@ -43,6 +43,25 @@ data class OrbiComment(
     val canEdit: Boolean,
 )
 
+/**
+ * A PR inline review comment (from the "Files changed" tab).
+ * May contain a GitHub code suggestion block (```suggestion).
+ */
+data class OrbiReviewComment(
+    val id: Long,
+    val itemId: Long,          // the PR id
+    val author: String,
+    val body: String,
+    val createdAt: Instant,
+    val updatedAt: Instant,
+    val path: String,          // file path the comment is anchored to
+    val line: Int?,            // target line number (null for file-level comments)
+    val diffHunk: String,      // surrounding diff context sent by GitHub
+    val isSuggestion: Boolean, // body contains a ```suggestion block
+    val inReplyToId: Long?,    // non-null when this is a reply inside a thread
+    val reviewId: Long?,       // pull_request_review_id
+)
+
 @Serializable
 data class TrackedRepo(
     val org: String,

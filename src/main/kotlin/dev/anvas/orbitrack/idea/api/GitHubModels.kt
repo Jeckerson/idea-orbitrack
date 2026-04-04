@@ -113,6 +113,44 @@ data class GhComment(
     @SerialName("updated_at") val updatedAt: String,
 )
 
+/**
+ * A PR inline review comment returned by
+ * GET /repos/{org}/{repo}/pulls/{number}/comments
+ * or the `gh api` equivalent.
+ */
+@Serializable
+data class GhReviewComment(
+    val id: Long,
+    val user: GhUser,
+    val body: String? = null,
+    @SerialName("created_at") val createdAt: String,
+    @SerialName("updated_at") val updatedAt: String,
+    val path: String = "",
+    val line: Int? = null,
+    @SerialName("original_line") val originalLine: Int? = null,
+    @SerialName("diff_hunk") val diffHunk: String = "",
+    @SerialName("in_reply_to_id") val inReplyToId: Long? = null,
+    @SerialName("pull_request_review_id") val pullRequestReviewId: Long? = null,
+) {
+    fun toOrbiReviewComment(itemId: Long): dev.anvas.orbitrack.idea.model.OrbiReviewComment {
+        val bodyText = body.orEmpty()
+        return dev.anvas.orbitrack.idea.model.OrbiReviewComment(
+            id = id,
+            itemId = itemId,
+            author = user.login,
+            body = bodyText,
+            createdAt = java.time.Instant.parse(createdAt),
+            updatedAt = java.time.Instant.parse(updatedAt),
+            path = path,
+            line = line ?: originalLine,
+            diffHunk = diffHunk,
+            isSuggestion = bodyText.contains("```suggestion", ignoreCase = true),
+            inReplyToId = inReplyToId,
+            reviewId = pullRequestReviewId,
+        )
+    }
+}
+
 @Serializable
 data class GhSearchResult(
     @SerialName("total_count") val totalCount: Int,

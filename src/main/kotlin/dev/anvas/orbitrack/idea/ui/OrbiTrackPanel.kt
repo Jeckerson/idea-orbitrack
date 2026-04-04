@@ -163,6 +163,23 @@ class OrbiTrackPanel(private val project: Project) : JPanel(BorderLayout()), Dis
                 }
             }
         }
+        onLoadAllReviewComments = { item ->
+            service.loadReviewComments(item, loadAll = true)
+        }
+        onReplyToReviewComment = { item, inReplyToId, body ->
+            service.replyToReviewComment(item, inReplyToId, body) { success, error ->
+                ApplicationManager.getApplication().invokeLater {
+                    if (!success && error != null) {
+                        JOptionPane.showMessageDialog(
+                            this@OrbiTrackPanel,
+                            "Failed to post reply: $error",
+                            "OrbiTrack",
+                            JOptionPane.ERROR_MESSAGE
+                        )
+                    }
+                }
+            }
+        }
     }
 
     private val loadMoreButton = JButton("Load more\u2026").apply {
@@ -217,11 +234,14 @@ class OrbiTrackPanel(private val project: Project) : JPanel(BorderLayout()), Dis
                     detailPanel.showItem(
                         sel.item,
                         service.getComments(sel.item.number),
-                        service.getTimeline(sel.item.number)
+                        service.getTimeline(sel.item.number),
+                        service.getReviewComments(sel.item.number),
+                        service.hasMoreReviewComments(sel.item.number),
                     )
                     service.loadComments(sel.item)
                     service.loadTimeline(sel.item)
                     service.loadPullDetail(sel.item)
+                    if (sel.item.type == ItemType.PR) service.loadReviewComments(sel.item)
                 } else {
                     detailPanel.showEmpty()
                 }
@@ -293,7 +313,9 @@ class OrbiTrackPanel(private val project: Project) : JPanel(BorderLayout()), Dis
             detailPanel.showItem(
                 freshItem,
                 svc.getComments(freshItem.number),
-                svc.getTimeline(freshItem.number)
+                svc.getTimeline(freshItem.number),
+                svc.getReviewComments(freshItem.number),
+                svc.hasMoreReviewComments(freshItem.number),
             )
         }
     }
