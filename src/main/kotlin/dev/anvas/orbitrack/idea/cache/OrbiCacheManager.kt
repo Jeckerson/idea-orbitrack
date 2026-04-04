@@ -129,6 +129,7 @@ data class CachedFilterState(
     val sortField: String = "UPDATED",
     val sortDirection: String = "DESC",
     val groupModes: List<String> = listOf("BY_TYPE"),
+    val filtersCollapsed: Boolean = false,
 )
 
 @Serializable
