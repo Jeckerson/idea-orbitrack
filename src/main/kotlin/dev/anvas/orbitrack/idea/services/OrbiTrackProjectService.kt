@@ -5,6 +5,7 @@ import com.intellij.openapi.components.Service
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.project.Project
 import dev.anvas.orbitrack.idea.api.GhPullDetail
+import dev.anvas.orbitrack.idea.api.GhReviewComment
 import dev.anvas.orbitrack.idea.cache.CachedFilterState
 import dev.anvas.orbitrack.idea.cache.CachedState
 import dev.anvas.orbitrack.idea.cache.OrbiCacheManager
@@ -12,10 +13,12 @@ import dev.anvas.orbitrack.idea.cache.OrbiCacheManager.Companion.toCached
 import dev.anvas.orbitrack.idea.cache.OrbiCacheManager.Companion.toOrbiItem
 import dev.anvas.orbitrack.idea.model.OrbiComment
 import dev.anvas.orbitrack.idea.model.OrbiItem
+import dev.anvas.orbitrack.idea.model.OrbiReviewComment
 import dev.anvas.orbitrack.idea.model.OrbiTimelineEvent
 import dev.anvas.orbitrack.idea.model.ItemType
 import dev.anvas.orbitrack.idea.model.ItemState
 import dev.anvas.orbitrack.idea.model.TrackedRepo
+import kotlinx.serialization.json.Json
 import kotlinx.coroutines.*
 import java.time.Instant
 
@@ -40,7 +43,11 @@ class OrbiTrackProjectService(private val project: Project) : Disposable {
     private val commentsMap = mutableMapOf<Int, List<OrbiComment>>()
     private val timelineMap = mutableMapOf<Int, List<OrbiTimelineEvent>>()
     private val pullDetailMap = mutableMapOf<Int, GhPullDetail>()
+    private val reviewCommentsMap = mutableMapOf<Int, List<OrbiReviewComment>>()
+    private val reviewCommentsHasMore = mutableSetOf<Int>()
     private var authenticatedUser: String? = null
+
+    private val json = Json { ignoreUnknownKeys = true; isLenient = true }
 
     /** Timestamp of the last successful refresh, used for incremental fetches via Search API. */
     private var lastRefreshTimestamp: Instant? = null
@@ -194,11 +201,14 @@ class OrbiTrackProjectService(private val project: Project) : Disposable {
                 val events = client.getTimeline(item.org, item.repo, item.number)
                 timelineMap[item.number] = events
 
-                // For PRs, reload merge/branch detail
+                // For PRs, reload merge/branch detail and review comments
                 if (freshItem.type == ItemType.PR) {
                     pullDetailMap.remove(item.number)
+                    reviewCommentsMap.remove(item.number)
+                    reviewCommentsHasMore.remove(item.number)
                     // loadPullDetail will enrich the item and notify again
                     loadPullDetail(freshItem, forceReload = true)
+                    loadReviewComments(freshItem)
                 }
 
                 onResult?.invoke(true, null)
@@ -626,6 +636,92 @@ class OrbiTrackProjectService(private val project: Project) : Disposable {
         }
     }
 
+    // ---- PR Review Comments (via gh CLI) ----
+
+    fun getReviewComments(itemNumber: Int): List<OrbiReviewComment> =
+        reviewCommentsMap[itemNumber].orEmpty()
+
+    fun hasMoreReviewComments(itemNumber: Int): Boolean =
+        reviewCommentsHasMore.contains(itemNumber)
+
+    fun hasReviewCommentsCached(itemNumber: Int): Boolean =
+        reviewCommentsMap.containsKey(itemNumber)
+
+    /**
+     * Loads PR inline review comments via `gh api`.
+     *
+     * @param loadAll when true, passes `--paginate` to `gh` to fetch every page;
+     *                otherwise fetches the first 30 comments and marks hasMore when applicable.
+     */
+    fun loadReviewComments(item: OrbiItem, loadAll: Boolean = false) {
+        if (item.type != ItemType.PR) return
+        if (!loadAll && reviewCommentsMap.containsKey(item.number)) return
+        scope.launch {
+            try {
+                val endpoint = "repos/${item.org}/${item.repo}/pulls/${item.number}/comments"
+                val result = if (loadAll) {
+                    runGhCommand("api", endpoint, "--paginate")
+                } else {
+                    runGhCommand("api", "$endpoint?per_page=30&page=1")
+                }
+                if (result.exitCode != 0) {
+                    log.warn("gh api review comments failed (${item.org}/${item.repo}#${item.number}): ${result.stderr}")
+                    return@launch
+                }
+                // gh --paginate emits one JSON array per page concatenated — normalise to one array
+                val rawJson = normaliseGhPaginatedJson(result.stdout)  // see GhJsonUtils.kt
+                val ghComments = json.decodeFromString<List<GhReviewComment>>(rawJson)
+                val mapped = ghComments.map { it.toOrbiReviewComment(item.id) }
+                reviewCommentsMap[item.number] = mapped
+                if (loadAll) {
+                    reviewCommentsHasMore.remove(item.number)
+                } else {
+                    if (mapped.size >= 30) reviewCommentsHasMore.add(item.number)
+                    else reviewCommentsHasMore.remove(item.number)
+                }
+                notifyListeners()
+            } catch (e: Exception) {
+                log.warn("Failed to load review comments for ${item.org}/${item.repo}#${item.number}", e)
+            }
+        }
+    }
+
+    /**
+     * Posts a reply to an existing PR review comment thread via `gh api`.
+     * [body] may contain a ` ```suggestion ` block to propose a code change.
+     */
+    fun replyToReviewComment(
+        item: OrbiItem,
+        inReplyToId: Long,
+        body: String,
+        onResult: (Boolean, String?) -> Unit,
+    ) {
+        scope.launch {
+            try {
+                val endpoint = "repos/${item.org}/${item.repo}/pulls/${item.number}/comments"
+                val result = runGhCommand(
+                    "api", endpoint,
+                    "-X", "POST",
+                    "-f", "body=$body",
+                    "-F", "in_reply_to=$inReplyToId",
+                )
+                if (result.exitCode != 0) {
+                    onResult(false, result.stderr.ifBlank { "gh api error (exit ${result.exitCode})" })
+                    return@launch
+                }
+                // Refresh review comments so the reply appears immediately
+                reviewCommentsMap.remove(item.number)
+                reviewCommentsHasMore.remove(item.number)
+                loadReviewComments(item)
+                onResult(true, null)
+            } catch (e: Exception) {
+                log.warn("Failed to reply to review comment on ${item.org}/${item.repo}#${item.number}", e)
+                onResult(false, e.message)
+            }
+        }
+    }
+
+
     // ---- Checkout branch (via git CLI) ----
 
     fun checkoutBranch(item: OrbiItem, onResult: (Boolean, String?) -> Unit) {
@@ -731,6 +827,23 @@ class OrbiTrackProjectService(private val project: Project) : Disposable {
                     .directory(workDir)
                     .redirectErrorStream(false)
                     .start()
+                val stdout = process.inputStream.bufferedReader().readText()
+                val stderr = process.errorStream.bufferedReader().readText()
+                val exitCode = process.waitFor()
+                GitResult(exitCode, stdout.trim(), stderr.trim())
+            } catch (e: Exception) {
+                GitResult(-1, "", e.message ?: "Unknown error")
+            }
+        }
+
+    /** Runs a `gh` CLI command (no working-directory dependency). */
+    private suspend fun runGhCommand(vararg args: String): GitResult =
+        withContext(Dispatchers.IO) {
+            try {
+                val workDir = project.basePath?.let { java.io.File(it) }
+                val pb = ProcessBuilder("gh", *args).redirectErrorStream(false)
+                if (workDir != null && workDir.exists()) pb.directory(workDir)
+                val process = pb.start()
                 val stdout = process.inputStream.bufferedReader().readText()
                 val stderr = process.errorStream.bufferedReader().readText()
                 val exitCode = process.waitFor()

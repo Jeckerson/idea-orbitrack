@@ -9,6 +9,7 @@ import dev.anvas.orbitrack.idea.model.ItemState
 import dev.anvas.orbitrack.idea.model.ItemType
 import dev.anvas.orbitrack.idea.model.OrbiComment
 import dev.anvas.orbitrack.idea.model.OrbiItem
+import dev.anvas.orbitrack.idea.model.OrbiReviewComment
 import dev.anvas.orbitrack.idea.model.OrbiTimelineEvent
 import java.awt.*
 import java.awt.datatransfer.StringSelection
@@ -37,8 +38,16 @@ class ItemDetailPanel : JPanel(BorderLayout()) {
     /** Callback when user wants to refresh this single item. Receives (item). */
     var onRefreshItem: ((OrbiItem) -> Unit)? = null
 
-    /** Callback when user wants to export issue/PR as a .md file. Receives (item, comments). */
-    var onCreateMdFile: ((OrbiItem, List<OrbiComment>) -> Unit)? = null
+    /** Callback when user wants to export issue/PR as a .md file.
+     *  Receives (item, conversation comments, review comments). */
+    var onCreateMdFile: ((OrbiItem, List<OrbiComment>, List<OrbiReviewComment>) -> Unit)? = null
+
+    /** Callback to lazily load all PR review comments (removes the 30-item cap). */
+    var onLoadAllReviewComments: ((OrbiItem) -> Unit)? = null
+
+    /** Callback to post a reply (possibly with a suggestion) to a review thread.
+     *  Receives (item, inReplyToId, body). */
+    var onReplyToReviewComment: ((OrbiItem, Long, String) -> Unit)? = null
 
     private var currentItem: OrbiItem? = null
     private var isItemLoading: Boolean = false
@@ -130,7 +139,13 @@ class ItemDetailPanel : JPanel(BorderLayout()) {
         repaint()
     }
 
-    fun showItem(item: OrbiItem, comments: List<OrbiComment>, timeline: List<OrbiTimelineEvent> = emptyList()) {
+    fun showItem(
+        item: OrbiItem,
+        comments: List<OrbiComment>,
+        timeline: List<OrbiTimelineEvent> = emptyList(),
+        reviewComments: List<OrbiReviewComment> = emptyList(),
+        hasMoreReviewComments: Boolean = false,
+    ) {
         // Preserve scroll position when refreshing the same item
         val isSameItem = currentItem?.let {
             it.org == item.org && it.repo == item.repo && it.number == item.number
@@ -259,6 +274,58 @@ class ItemDetailPanel : JPanel(BorderLayout()) {
             }
         }
 
+        // --- Code Review (PR review comments with inline suggestions) ---
+        val reviewBox = JPanel().apply {
+            layout = BoxLayout(this, BoxLayout.Y_AXIS)
+            isOpaque = false
+            alignmentX = LEFT_ALIGNMENT
+            border = JBUI.Borders.emptyTop(6)
+        }
+        if (item.type == ItemType.PR) {
+            val totalLabel = when {
+                reviewComments.isEmpty() -> "Code Review (loading\u2026)"
+                hasMoreReviewComments -> "Code Review (${reviewComments.size}+)"
+                else -> "Code Review (${reviewComments.size})"
+            }
+            val reviewHeader = JBLabel(totalLabel).apply {
+                font = font.deriveFont(Font.BOLD, 12f)
+                alignmentX = LEFT_ALIGNMENT
+                border = JBUI.Borders.empty(4, 0)
+            }
+            reviewBox.add(reviewHeader)
+
+            if (reviewComments.isNotEmpty()) {
+                // Group by file path
+                val byPath = reviewComments.groupBy { it.path }
+                for ((path, pathComments) in byPath) {
+                    // File path subheader
+                    val fileLabel = JBLabel("\uD83D\uDCC4 $path").apply {
+                        font = font.deriveFont(Font.ITALIC, font.size2D - 0.5f)
+                        foreground = JBColor(0x0969DA, 0x58A6FF)
+                        alignmentX = LEFT_ALIGNMENT
+                        border = JBUI.Borders.empty(6, 0, 2, 0)
+                    }
+                    reviewBox.add(fileLabel)
+
+                    for (rc in pathComments) {
+                        reviewBox.add(makeReviewCommentCard(item, rc))
+                        reviewBox.add(Box.createRigidArea(Dimension(0, 6)))
+                    }
+                }
+            }
+
+            // "Load all" button shown when there are more pages
+            if (hasMoreReviewComments) {
+                val loadAllBtn = JButton("\u2B07 Load all review comments").apply {
+                    alignmentX = LEFT_ALIGNMENT
+                    toolTipText = "Fetch every review comment (may take a moment for large PRs)"
+                    addActionListener { onLoadAllReviewComments?.invoke(item) }
+                }
+                reviewBox.add(Box.createRigidArea(Dimension(0, 4)))
+                reviewBox.add(loadAllBtn)
+            }
+        }
+
         // --- Action bar ---
         val actions = JPanel(FlowLayout(FlowLayout.LEFT, 8, 0)).apply {
             isOpaque = false
@@ -295,11 +362,11 @@ class ItemDetailPanel : JPanel(BorderLayout()) {
                 }
             })
             add(JButton("Copy LLM Context").apply {
-                addActionListener { copyContext(item, comments) }
+                addActionListener { copyContext(item, comments, reviewComments) }
             })
             add(JButton("\uD83D\uDCC4 Create .md file").apply {
                 toolTipText = "Save issue/PR as a Markdown file in the project root"
-                addActionListener { onCreateMdFile?.invoke(item, comments) }
+                addActionListener { onCreateMdFile?.invoke(item, comments, reviewComments) }
             })
         }
 
@@ -411,6 +478,7 @@ class ItemDetailPanel : JPanel(BorderLayout()) {
             border = JBUI.Borders.emptyLeft(4)
             add(bodyPane)
             add(commentsBox)
+            add(reviewBox)
             add(historyBox)
             add(actions)
             add(prActions)
@@ -533,6 +601,139 @@ class ItemDetailPanel : JPanel(BorderLayout()) {
         }
     }
 
+    /**
+     * Renders a single PR review comment card.
+     *
+     * Layout:
+     *   ┌──────────────────────────────────────────┐
+     *   │ [💡 Suggestion] @author · date            │ ← header (indented if reply)
+     *   │ <pre> diff hunk </pre>                    │ ← code context
+     *   │ <body markdown>                           │ ← comment text / suggestion block
+     *   │                   [↩ Reply] [↩ Suggest]  │ ← action buttons
+     *   └──────────────────────────────────────────┘
+     */
+    private fun makeReviewCommentCard(item: OrbiItem, rc: OrbiReviewComment): JPanel =
+        JPanel(BorderLayout()).apply {
+            val indent = if (rc.inReplyToId != null) 16 else 0
+            border = BorderFactory.createCompoundBorder(
+                BorderFactory.createLineBorder(
+                    if (rc.isSuggestion) JBColor(0x8250DF, 0xA371F7) else JBColor.border(), 1
+                ),
+                JBUI.Borders.empty(8, 8 + indent, 8, 8)
+            )
+            isOpaque = false
+            alignmentX = LEFT_ALIGNMENT
+            maximumSize = Dimension(Int.MAX_VALUE, Int.MAX_VALUE)
+
+            // ---- Header row ----
+            val dateStr = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")
+                .withZone(ZoneId.systemDefault())
+                .format(rc.createdAt)
+            val authorUrl = "https://github.com/${rc.author}"
+            val linkColor = colorHex(JBColor(0x0969DA, 0x58A6FF))
+            val suggestionBadge = if (rc.isSuggestion)
+                "<span style='background:#8250df;color:#fff;padding:1px 5px;border-radius:3px;font-size:${nativeFontSize - 2}pt;'>\uD83D\uDCA1 suggestion</span>&nbsp;"
+            else ""
+            val replyIndicator = if (rc.inReplyToId != null) "<span style='color:gray;'>\u21AA reply &nbsp;</span>" else ""
+            val lineInfo = rc.line?.let { " · line $it" } ?: ""
+            val headHtml = "<html><body style=\"font-family:'$nativeFontFamily';font-size:${nativeFontSize - 1}pt;margin:0;padding:0;\">" +
+                "$replyIndicator$suggestionBadge" +
+                "<a href=\"$authorUrl\" style=\"color:$linkColor;font-weight:bold;\">@${esc(rc.author)}</a>" +
+                " $middot $dateStr$lineInfo</body></html>"
+            val head = makeHtmlLabel(headHtml).apply {
+                border = JBUI.Borders.emptyBottom(4)
+            }
+
+            // ---- Diff hunk (monospace pre block) ----
+            val hunkPanel = if (rc.diffHunk.isNotBlank()) {
+                val codeBg = colorHex(JBColor(0xF6F8FA, 0x2D333B))
+                val fg = colorHex(JBColor.foreground())
+                val hunkHtml = "<html><body style='margin:0;padding:0;'>" +
+                    "<pre style='font-family:monospace;font-size:${nativeFontSize - 2}pt;" +
+                    "background:$codeBg;color:$fg;padding:6px;margin:0;'>" +
+                    esc(rc.diffHunk) + "</pre></body></html>"
+                JEditorPane("text/html", hunkHtml).apply {
+                    isEditable = false
+                    isOpaque = false
+                    border = JBUI.Borders.emptyBottom(4)
+                }
+            } else null
+
+            // ---- Comment body (markdown; suggestion block rendered as code) ----
+            val bodyHtml = MarkdownRenderer.toHtml(rc.body)
+            val bodyPane = JEditorPane("text/html", bodyHtml).apply {
+                isEditable = false
+                isOpaque = false
+                border = JBUI.Borders.empty()
+                addHyperlinkListener { e ->
+                    if (e.eventType == javax.swing.event.HyperlinkEvent.EventType.ACTIVATED)
+                        com.intellij.ide.BrowserUtil.browse(e.url.toExternalForm())
+                }
+            }
+
+            // ---- Action buttons ----
+            val btnPanel = JPanel(FlowLayout(FlowLayout.RIGHT, 4, 0)).apply {
+                isOpaque = false
+                // Plain reply
+                add(JButton("\u21A9 Reply").apply {
+                    toolTipText = "Reply to this review thread"
+                    addActionListener {
+                        showReplyDialog(item, rc, suggestionTemplate = false)
+                    }
+                })
+                // Reply with suggestion (only shown when the parent is also a suggestion, or always offer it)
+                add(JButton("\uD83D\uDCA1 Suggest").apply {
+                    toolTipText = "Reply with a code suggestion"
+                    addActionListener {
+                        showReplyDialog(item, rc, suggestionTemplate = true)
+                    }
+                })
+            }
+
+            // ---- Compose ----
+            val centerBox = JPanel().apply {
+                layout = BoxLayout(this, BoxLayout.Y_AXIS)
+                isOpaque = false
+                if (hunkPanel != null) add(hunkPanel)
+                add(bodyPane)
+            }
+            add(head, BorderLayout.NORTH)
+            add(centerBox, BorderLayout.CENTER)
+            add(btnPanel, BorderLayout.SOUTH)
+        }
+
+    private fun showReplyDialog(item: OrbiItem, rc: OrbiReviewComment, suggestionTemplate: Boolean) {
+        val textArea = JTextArea(8, 55).apply {
+            lineWrap = true
+            wrapStyleWord = true
+            if (suggestionTemplate) {
+                // Pre-fill with a suggestion block quoting the last changed line from the diff hunk
+                val lastAddedLine = rc.diffHunk.lines()
+                    .lastOrNull { it.startsWith("+") }
+                    ?.removePrefix("+") ?: ""
+                text = "```suggestion\n$lastAddedLine\n```"
+            }
+        }
+        val scroll = JScrollPane(textArea)
+        val replyToLabel = JBLabel(
+            "<html><b>Replying to @${esc(rc.author)}</b> on <code>${esc(rc.path)}</code>${rc.line?.let { " line $it" } ?: ""}</html>"
+        )
+        val dialogPanel = JPanel(BorderLayout(0, 6)).apply {
+            add(replyToLabel, BorderLayout.NORTH)
+            add(scroll, BorderLayout.CENTER)
+        }
+        val result = JOptionPane.showConfirmDialog(
+            this@ItemDetailPanel,
+            dialogPanel,
+            "Reply to review comment",
+            JOptionPane.OK_CANCEL_OPTION,
+            JOptionPane.PLAIN_MESSAGE,
+        )
+        if (result == JOptionPane.OK_OPTION && textArea.text.isNotBlank()) {
+            onReplyToReviewComment?.invoke(item, rc.id, textArea.text)
+        }
+    }
+
     private fun makeBadge(label: String) = JLabel(label).apply {
         isOpaque = true
         background = JBColor(0xDDF4FF, 0x1F3A5F)
@@ -541,7 +742,7 @@ class ItemDetailPanel : JPanel(BorderLayout()) {
         border = JBUI.Borders.empty(2, 6, 2, 6)
     }
 
-    private fun copyContext(item: OrbiItem, comments: List<OrbiComment>) {
+    private fun copyContext(item: OrbiItem, comments: List<OrbiComment>, reviewComments: List<OrbiReviewComment>) {
         val ctx = buildString {
             val t = if (item.type == ItemType.PR) "PR" else "Issue"
             appendLine("## $t: ${item.title} (#${item.number})")
@@ -559,6 +760,29 @@ class ItemDetailPanel : JPanel(BorderLayout()) {
                     appendLine("**@${c.author}** $middot ${c.createdAt}")
                     appendLine(c.body)
                     appendLine("---")
+                }
+            }
+            if (reviewComments.isNotEmpty()) {
+                appendLine()
+                appendLine("### Code Review Comments (${reviewComments.size})")
+                val byPath = reviewComments.groupBy { it.path }
+                for ((path, pathComments) in byPath) {
+                    appendLine()
+                    appendLine("#### `$path`")
+                    for (rc in pathComments) {
+                        appendLine()
+                        val replyTag = if (rc.inReplyToId != null) " ↩ reply" else ""
+                        val suggestionTag = if (rc.isSuggestion) " 💡 suggestion" else ""
+                        val lineTag = rc.line?.let { " · line $it" } ?: ""
+                        appendLine("**@${rc.author}**$lineTag$suggestionTag$replyTag $middot ${rc.createdAt}")
+                        if (rc.diffHunk.isNotBlank()) {
+                            appendLine("```diff")
+                            appendLine(rc.diffHunk)
+                            appendLine("```")
+                        }
+                        appendLine(rc.body)
+                        appendLine("---")
+                    }
                 }
             }
             appendLine()

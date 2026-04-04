@@ -5,7 +5,23 @@ All notable changes to the **OrbiTrack** IntelliJ plugin will be documented in t
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.0.4] — 2026-04-04
+## [1.0.5] — 2026-04-04
+
+### Added
+
+- **PR inline review comments** — selecting a Pull Request now loads a **Code Review** section below the regular Comments, showing all inline code-annotation comments from the "Files changed" tab; comments are grouped by file path, each card displays the surrounding diff hunk in a monospace block, and code-suggestion comments (`suggestion` fence) are highlighted with a purple border and badge
+- **Lazy "Load all review comments" button** — the first load fetches the initial 30 review comments; when more exist a button appears to fetch all remaining pages at once via `gh api --paginate`
+- **Reply to review thread** — every review comment card has a **↩ Reply** button (plain text) and a **💡 Suggest** button that pre-fills the reply dialog with a `suggestion` code block quoting the last changed line from the diff hunk; replies are posted via `gh api -X POST -F in_reply_to=<id>` and the section refreshes automatically
+- **Review comments in `.md` export** — "Create .md file" now appends a `## Code Review` section to the exported Markdown file, grouped by file path with `diff`-fenced diff hunks, line numbers, and suggestion/reply indicators
+- **Review comments in "Copy LLM Context"** — the clipboard context now includes a `### Code Review Comments` section with the same structure, giving LLMs full diff context for code-review discussions
+- `GhReviewComment` serializable DTO and `OrbiReviewComment` domain model (`path`, `line`, `diffHunk`, `isSuggestion`, `inReplyToId`, `reviewId`)
+- `GhJsonUtils.kt` — `normaliseGhPaginatedJson()` helper that collapses multi-page `gh api --paginate` output (concatenated JSON arrays) into a single valid array before deserialization
+- `runGhCommand()` utility in `OrbiTrackProjectService` (mirrors the existing `runGitCommand` pattern)
+
+### Fixed
+
+- Removed a stray `/**` block-comment opener that had accidentally been left in `OrbiTrackProjectService`, which would have silently swallowed the `checkoutBranch`, `runGitCommand`, `runGhCommand`, and `dispose` methods in a future incremental compile
+
 
 ### Added
 
