@@ -66,8 +66,26 @@ class FilterPanel(
     val groupModes: List<GroupMode>
         get() = GroupMode.entries.filter { groupChecks[it]?.isSelected == true }
 
+    // --- Collapsible inner panel ---
+    private val innerPanel = JPanel(GridBagLayout()).apply {
+        isOpaque = false
+    }
+
+    /** Full-width toggle button at the top of the panel. */
+    private val toggleButton = JButton().apply {
+        isOpaque = false
+        isFocusPainted = false
+        horizontalAlignment = SwingConstants.LEFT
+        border = JBUI.Borders.empty(2, 0, 2, 0)
+        addActionListener {
+            innerPanel.isVisible = !innerPanel.isVisible
+            updateToggleButtonLabel()
+            if (!suppressEvents) onFilterChanged()
+        }
+    }
+
     init {
-        border = JBUI.Borders.empty(6, 8, 2, 8)
+        border = JBUI.Borders.empty(4, 8, 2, 8)
         isOpaque = false
 
         val labelInsets = Insets(2, 0, 0, 4)
@@ -75,11 +93,11 @@ class FilterPanel(
 
         var row = 0
         fun addRow(label: String, component: JComponent) {
-            add(JBLabel("$label:"), GridBagConstraints().apply {
+            innerPanel.add(JBLabel("$label:"), GridBagConstraints().apply {
                 gridx = 0; gridy = row; anchor = GridBagConstraints.WEST; insets = labelInsets
             })
             row++
-            add(component, GridBagConstraints().apply {
+            innerPanel.add(component, GridBagConstraints().apply {
                 gridx = 0; gridy = row; fill = GridBagConstraints.HORIZONTAL
                 weightx = 1.0; insets = comboInsets
             })
@@ -93,20 +111,77 @@ class FilterPanel(
         addRow("Sort", sortPanel)
         addRow("View", groupButton)
 
-        orgCombo.addActionListener { if (!suppressEvents) onFilterChanged() }
-        repoCombo.addActionListener { if (!suppressEvents) onFilterChanged() }
-        typeCombo.addActionListener { if (!suppressEvents) onFilterChanged() }
-        stateCombo.addActionListener { if (!suppressEvents) onFilterChanged() }
-        sortFieldCombo.addActionListener { if (!suppressEvents) onFilterChanged() }
+        orgCombo.addActionListener { if (!suppressEvents) { updateToggleButtonLabel(); onFilterChanged() } }
+        repoCombo.addActionListener { if (!suppressEvents) { updateToggleButtonLabel(); onFilterChanged() } }
+        typeCombo.addActionListener { if (!suppressEvents) { updateToggleButtonLabel(); onFilterChanged() } }
+        stateCombo.addActionListener { if (!suppressEvents) { updateToggleButtonLabel(); onFilterChanged() } }
+        sortFieldCombo.addActionListener { if (!suppressEvents) { updateToggleButtonLabel(); onFilterChanged() } }
         for ((_, checkItem) in groupChecks) {
             checkItem.addActionListener {
                 updateGroupButtonLabel()
+                updateToggleButtonLabel()
                 if (!suppressEvents) onFilterChanged()
             }
         }
 
         // Reflect default grouping selection in button label
         updateGroupButtonLabel()
+
+        // Layout: toggle button at top, collapsible inner panel below
+        add(toggleButton, GridBagConstraints().apply {
+            gridx = 0; gridy = 0; fill = GridBagConstraints.HORIZONTAL; weightx = 1.0
+            insets = Insets(0, 0, 4, 0)
+        })
+        add(innerPanel, GridBagConstraints().apply {
+            gridx = 0; gridy = 1; fill = GridBagConstraints.HORIZONTAL; weightx = 1.0
+        })
+
+        updateToggleButtonLabel()
+    }
+
+    // --- Summary helpers ---
+
+    /**
+     * Builds a compact string of non-default active filter selections,
+     * e.g. "Closed · PRs · my-org" — capped at 40 chars with ellipsis.
+     */
+    internal fun buildSummary(): String {
+        val parts = mutableListOf<String>()
+
+        // State (default = index 0 "Open")
+        if (stateCombo.selectedIndex != 0) {
+            parts += stateCombo.selectedItem?.toString() ?: ""
+        }
+        // Type (default = index 0 "All Types")
+        if (typeCombo.selectedIndex != 0) {
+            parts += typeCombo.selectedItem?.toString() ?: ""
+        }
+        // Repo (default = index 0 "All Repos")  — more specific than org, show first
+        if (repoCombo.selectedIndex != 0) {
+            parts += repoCombo.selectedItem?.toString() ?: ""
+        } else if (orgCombo.selectedIndex != 0) {
+            // Org (default = index 0 "All Orgs")
+            parts += orgCombo.selectedItem?.toString() ?: ""
+        }
+        // Sort — show when not default (UPDATED DESC)
+        val currentField = sortFieldCombo.selectedItem as? SortField ?: SortField.UPDATED
+        if (currentField != SortField.UPDATED || sortDirection != SortDirection.DESC) {
+            parts += "${currentField.name.lowercase()} ${sortDirection.symbol}"
+        }
+
+        if (parts.isEmpty()) return ""
+
+        val joined = parts.filter { it.isNotBlank() }.joinToString(" \u00B7 ")
+        return if (joined.length > 40) joined.take(39) + "\u2026" else joined
+    }
+
+    private fun updateToggleButtonLabel() {
+        val summary = buildSummary()
+        toggleButton.text = if (innerPanel.isVisible) {
+            "\u25BE Filters"
+        } else {
+            if (summary.isBlank()) "\u25B8 Filters" else "\u25B8 Filters \u00B7 $summary"
+        }
     }
 
     private fun updateGroupButtonLabel() {
@@ -136,6 +211,7 @@ class FilterPanel(
         } finally {
             suppressEvents = false
         }
+        updateToggleButtonLabel()
     }
 
     fun applyFilter(items: List<OrbiItem>): List<OrbiItem> {
@@ -172,7 +248,7 @@ class FilterPanel(
         }
     }
 
-    /** Captures the current filter/sort/group state for persistence. */
+    /** Captures the current filter/sort/group/collapse state for persistence. */
     fun getFilterState(): CachedFilterState {
         return CachedFilterState(
             selectedOrg = if (orgCombo.selectedIndex > 0) orgCombo.selectedItem as? String else null,
@@ -182,10 +258,11 @@ class FilterPanel(
             sortField = (sortFieldCombo.selectedItem as? SortField)?.name ?: "UPDATED",
             sortDirection = sortDirection.name,
             groupModes = groupModes.map { it.name },
+            filtersCollapsed = !innerPanel.isVisible,
         )
     }
 
-    /** Restores filter/sort/group state from a cached snapshot. */
+    /** Restores filter/sort/group/collapse state from a cached snapshot. */
     fun restoreFilterState(state: CachedFilterState) {
         suppressEvents = true
         try {
@@ -218,8 +295,12 @@ class FilterPanel(
                 checkItem.isSelected = mode in restoredModes
             }
             updateGroupButtonLabel()
+
+            // Collapse state
+            innerPanel.isVisible = !state.filtersCollapsed
         } finally {
             suppressEvents = false
         }
+        updateToggleButtonLabel()
     }
 }

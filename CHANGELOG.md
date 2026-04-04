@@ -5,6 +5,14 @@ All notable changes to the **OrbiTrack** IntelliJ plugin will be documented in t
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.4] — 2026-04-04
+
+### Added
+
+- **Collapsible filter panel** — a full-width toggle button (`▾ Filters` / `▸ Filters`) now sits at the top of the filter sidebar; clicking it collapses or expands all filter controls, freeing vertical space for the issues list
+- **Active-filter summary in collapsed header** — when the panel is collapsed, any non-default selections (state, type, repo/org, sort) are summarised inline in the toggle button label (e.g. `▸ Filters · Closed · PRs · my-org/my-repo`), capped at 40 characters
+- **Collapse state persistence** — the expanded/collapsed preference is stored in `CachedFilterState.filtersCollapsed` and restored automatically on IDE restart; existing cache files without the field default to expanded (backward-compatible)
+
 ## [1.0.3] — 2026-04-03
 
 ### Added
